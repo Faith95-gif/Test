@@ -1,0 +1,1606 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Host Meeting - Video Call App</title>
+  <script src="/js/taskbar-toggle-host.js" defer></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <script src="/socket.io/socket.io.js"></script>
+  <link rel="stylesheet" href="/css/meeting-tools.css">
+  <script src="/js/recordingPermissionManagerHost.js"></script>
+  <script src="/js/Assign-Id.js"></script>
+  <script src="/js/record.js" defer></script>
+  <link rel="stylesheet" href="/css/record.css">
+  <script src="/js/Audio Device/CameraDeviceManager.js"></script>
+  <script src="/js/screenShareManager.js"></script>
+  <link rel="stylesheet" href="/css/screenSharePermissions.css">
+  <script src="/js/autoHideSelfView.js"></script>
+  <link rel="stylesheet" href="/css/recordPermissionHost.css">
+ <script src="/js/noiseSuppression/noiseSuppressionHost.js"></script>
+  <script src="/js/meeting-tools.js" defer></script>
+  <script src="/js/reaction.js"></script>
+  <script src="/js/meetingHost.js"></script>
+  <script src="/js/Audio Device/audioDeviceManager.js"></script>
+  <script src="/js/Audio Device/settingEnhancement.js"></script>
+    <script src="/js/settings.js"></script>
+  <link rel="stylesheet" href="/css/settings.css">
+
+<link rel="stylesheet" href="/css/meetingHost.css">
+<link rel="stylesheet" href="/css/notes.css">
+<script src="/js/notes.js" defer></script>
+<script src="/js/fileShare.js"></script>
+<link rel="stylesheet" href="/css/fileShare.css">
+<script src="/js/chat.js"></script>
+<link rel="stylesheet" href="/css/chat.css">
+
+<!-- Recording Permission Control Scripts -->
+<script src="/js/recordingPermissionClient.js"></script>
+<script src="/js/hostRecordingControl.js"></script>
+
+<!-- Meeting Lock Scripts -->
+<script src="/js/meetingLock.js"></script>
+</head>
+<body class="bg-gray-100 font-sans">
+   <div id="app" class="video-call-app">
+      <!-- Participants Panel -->
+      <div class="participants-panel" id="participantsPanel">
+        <div class="participants-header">
+          <div class="participants-title">
+            <i class="fas fa-users"></i>
+            Participants (<span id="participantsPanelCount">0</span>)
+          </div>
+          <button class="close-participants" id="closeParticipants">
+            <i class="fas fa-times"></i>
+          </button>
+        </div>
+        
+        <div class="participants-search">
+          <input type="text" class="search-input" id="participantSearch" placeholder="Search participants...">
+        </div>
+        
+        <div class="participants-list" id="participantsList">
+          <!-- Participants will be populated dynamically -->
+        </div>
+      </div>
+
+      <!-- Main Video Area -->
+      <div class="video-container sidebar-view" id="videoContainer">
+        <!-- Spotlighted Video (Sidebar View) -->
+        <div class="main-video-section" id="mainVideoSection">
+          <!-- Main video will be populated dynamically -->
+        </div>
+
+        <!-- Secondary Videos (Sidebar View) / All Videos (Grid View) -->
+        <div class="secondary-videos-section" id="secondaryVideosSection">
+          <!-- Participant videos will be populated dynamically -->
+        </div>
+
+        <!-- Sidebar Navigation Controls -->
+        <div class="sidebar-navigation" id="sidebarNavigation" style="display: none;">
+          <button class="nav-btn" id="prevSidebarBtn" disabled>
+            <i class="fas fa-chevron-up"></i>
+          </button>
+          <div class="sidebar-set-indicator">
+            <span id="currentSidebarInfo">1 of 1</span>
+          </div>
+          <button class="nav-btn" id="nextSidebarBtn" disabled>
+            <i class="fas fa-chevron-down"></i>
+          </button>
+        </div>
+
+        <!-- Grid Navigation Controls -->
+        <div class="grid-navigation" id="gridNavigation" style="display: none;">
+          <button class="nav-btn" id="prevSetBtn" disabled>
+            <i class="fas fa-chevron-left"></i>
+          </button>
+          <div class="set-indicator">
+            <span id="currentSetInfo">Set 1 of 1</span>
+          </div>
+          <button class="nav-btn" id="nextSetBtn" disabled>
+            <i class="fas fa-chevron-right"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- Bottom Taskbar -->
+      <div class="taskbar">
+        <div class="taskbar-left">
+          <div class="meeting-info">
+            <h2 class="meeting-title" id="meetingTitle">Host Meeting</h2>
+            <span class="meeting-time" id="meetingTime">12:34 PM</span>
+          </div>
+        </div>
+        
+        <div class="taskbar-center">
+              <button class="control-btn chat-btn" onclick="toggleChat()">
+            <i class="fas fa-comment"></i>
+          </button>
+          
+   
+
+          <button class="control-btn" id="micBtn" data-active="true">
+            <i class="fas fa-microphone"></i>
+          </button>
+          
+          
+          <button class="control-btn" id="cameraBtn" data-active="true">
+            <i class="fas fa-video"></i>
+          </button>
+
+          <button class="control-btn" id="screenShareBtn" data-active="false">
+            <i class="fas fa-desktop"></i>
+          </button>
+
+          
+          <button class="control-btn participants-btn" id="memberToggleBtn">
+            <i class="fas fa-users"></i>
+            <span class="participant-count" id="participantCount">1</span>
+          </button>
+          
+          <button class="control-btn end-call-btn" id="endCallBtn">
+            <i class="fas fa-phone-slash"></i>
+          </button>
+        </div>
+        
+        <div class="taskbar-right">
+           <button style="margin-right: 10px;" class="control-btn" id="vortex-primary-activator-3k7s" title="Lock/Unlock Meeting">
+              <i class="fas fa-lock"></i>
+          </button> 
+          <button class="view-toggle-btn" id="viewToggle">
+            <i class="fas fa-th" id="viewToggleIcon"></i>
+            <span id="viewToggleText">Grid View</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Meeting Info Modal -->
+    <div class="modal-overlay" id="meetingInfoModal" style="display: none;">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>Meeting Information</h3>
+          <button class="close-btn" id="closeMeetingInfo">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="info-item">
+            <label>Meeting ID:</label>
+            <div class="meeting-id-display">
+              <span id="displayMeetingId"></span>
+              <button class="copy-btn" id="copyMeetingId">
+                <i class="fas fa-copy"></i>
+              </button>
+            </div>
+          </div>
+          <div class="info-item">
+            <label>Join URL:</label>
+            <div class="meeting-id-display">
+              <span id="displayJoinUrl"></span>
+              <button class="copy-btn" id="copyJoinUrl">
+                <i class="fas fa-copy"></i>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+     <div class="aurora-tools-panel-7h2x" id="dimension-tools-overlay-4h9w">
+
+            <div class="eclipse-header-9m2x">Meeting Tools</div>
+            
+            <div class="prism-tool-grid-4j8m" id="toolBox">
+           <div class="quantum-tool-item-2x9v" id="notesBtn" onclick="handleToolClick('notes')">
+  <div class="nebula-icon-container-5w7k">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 4h16v16H4z" stroke="currentColor" fill="none"/>
+      <path d="M8 4v16"/>
+      <path d="M4 8h16"/>
+    </svg>
+  </div>
+  <span class="celestial-tool-text-8k3m">Notes</span>
+</div>
+
+
+              <div class="quantum-tool-item-2x9v" id="floating-share-btn" onclick="handleToolClick('share')">
+  <div class="nebula-icon-container-5w7k">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="18" cy="5" r="3"></circle>
+      <circle cx="6" cy="12" r="3"></circle>
+      <circle cx="18" cy="19" r="3"></circle>
+      <path d="M8.59 13.51l6.83 3.98"/>
+      <path d="M15.42 6.51L8.59 10.5"/>
+    </svg>
+  </div>
+  <span class="celestial-tool-text-8k3m">Share</span>
+</div>
+
+<div class="quantum-tool-item-2x9v" id="create-poll-btn" onclick="showpoller(pollCreationpoller)">
+  <div class="nebula-icon-container-5w7k">
+    <i class="fas fa-chart-bar"></i>
+  </div>
+  <span class="celestial-tool-text-8k3m">Create Poll</span>
+</div>
+<div class="quantum-tool-item-2x9v" id="floating-view-polls-btn" onclick="showPollSelectionpoller()">
+  <div class="nebula-icon-container-5w7k">
+    <i class="fas fa-list-alt"></i>
+  </div>
+  <span class="celestial-tool-text-8k3m">View Polls</span>
+</div>
+
+
+             <div class="quantum-tool-item-2x9v" id="startCaptureBtn" >
+    <div class="nebula-icon-container-5w7k">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <circle cx="12" cy="12" r="5" fill="currentColor"></circle>
+        </svg>
+    </div>
+    <span class="celestial-tool-text-8k3m">Record Meeting</span>
+</div>
+
+
+                <div class="quantum-tool-item-2x9v" onclick="handleToolClick('chat')">
+                    <div class="nebula-icon-container-5w7k">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                        </svg>
+                    </div>
+                    <span class="celestial-tool-text-8k3m">Chat</span>
+                </div>
+
+                <div class="quantum-tool-item-2x9v" onclick="handleToolClick('participants')">
+                    <div class="nebula-icon-container-5w7k">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path>
+                            <circle cx="9" cy="7" r="4"></circle>
+                            <path d="M22 21v-2a4 4 0 0 0-3-3.87"></path>
+                            <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                        </svg>
+                    </div>
+                    <span class="celestial-tool-text-8k3m">Participants</span>
+                </div>
+
+                <div class="quantum-tool-item-2x9v" id="settings-btn" >
+    <div class="nebula-icon-container-5w7k">
+        <i class="fas fa-cog"></i>
+    </div>
+    <span class="celestial-tool-text-8k3m">Settings</span>
+</div>
+            </div>
+        </div>
+
+
+     <div class="aurora-tools-panel-7h2x" id="dimension-tools-overlay-4h9w">
+            <div class="eclipse-header-9m2x">Meeting Tools</div>
+            
+            <div class="prism-tool-grid-4j8m" id="toolBox">
+           <div class="quantum-tool-item-2x9v" id="notesBtn" onclick="handleToolClick('notes')">
+  <div class="nebula-icon-container-5w7k">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 4h16v16H4z" stroke="currentColor" fill="none"/>
+      <path d="M8 4v16"/>
+      <path d="M4 8h16"/>
+    </svg>
+  </div>
+  <span class="celestial-tool-text-8k3m">Notes</span>
+</div>
+
+
+              <div class="quantum-tool-item-2x9v" id="floating-share-btn" onclick="handleToolClick('share')">
+  <div class="nebula-icon-container-5w7k">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="18" cy="5" r="3"></circle>
+      <circle cx="6" cy="12" r="3"></circle>
+      <circle cx="18" cy="19" r="3"></circle>
+      <path d="M8.59 13.51l6.83 3.98"/>
+      <path d="M15.42 6.51L8.59 10.5"/>
+    </svg>
+  </div>
+  <span class="celestial-tool-text-8k3m">Share</span>
+</div>
+
+
+                <div class="quantum-tool-item-2x9v" onclick="handleToolClick('screen')">
+                    <div class="nebula-icon-container-5w7k">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect width="20" height="14" x="2" y="3" rx="2"></rect>
+                            <line x1="8" x2="16" y1="21" y2="21"></line>
+                            <line x1="12" x2="12" y1="17" y2="21"></line>
+                        </svg>
+                    </div>
+                    <span class="celestial-tool-text-8k3m">Share Screen</span>
+                </div>
+
+                <div class="quantum-tool-item-2x9v" onclick="handleToolClick('chat')">
+                    <div class="nebula-icon-container-5w7k">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+                        </svg>
+                    </div>
+                    <span class="celestial-tool-text-8k3m">Chat</span>
+                </div>
+
+                <div id="memberToggleBtn" class="quantum-tool-item-2x9v" onclick="">
+                    <div class="nebula-icon-container-5w7k">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path>
+                            <circle cx="9" cy="7" r="4"></circle>
+                            <path d="M22 21v-2a4 4 0 0 0-3-3.87"></path>
+                            <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                        </svg>
+                    </div>
+                    <span class="celestial-tool-text-8k3m">Participants</span>
+                </div>
+
+                <div class="quantum-tool-item-2x9v" onclick="handleToolClick('settings')">
+    <div class="nebula-icon-container-5w7k">
+        <i class="fas fa-cog"></i>
+    </div>
+    <span class="celestial-tool-text-8k3m">Settings</span>
+</div>
+            </div>
+        </div>
+   <div class="notes-overlay" id="notesOverlay">
+    <div class="notes-modal">
+      <div class="notes-header">
+        <h2 class="notes-title">My Notes</h2>
+        <div class="header-actions">
+          <button class="btn btn-secondary btn-icon" id="darkModeBtn" aria-label="Toggle dark mode">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 2v1M12 21v1M4.2 4.2l.8.8M19 19l.8.8M2 12h1M21 12h1M4.2 19.8l.8-.8M19 5l.8-.8"/>
+              <circle cx="12" cy="12" r="5"/>
+            </svg>
+          </button>
+          <button class="btn btn-primary" id="newNoteBtn">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 5v14m-7-7h14"/>
+            </svg>
+            New Note
+          </button>
+          <button class="btn btn-secondary" id="closeModalBtn">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18 6L6 18M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="notes-body">
+        <!-- Notes List View -->
+        <div id="notesListView">
+          <div class="notes-list" id="notesList"></div>
+          <div class="empty-state" id="emptyState">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14.5 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V7.5L14.5 2z"/>
+              <polyline points="14 2 14 8 20 8"/>
+              <path d="M12 18v-6m-3 3h6"/>
+            </svg>
+            <h3>No notes yet</h3>
+            <p>Create your first note by clicking the "New Note" button above.</p>
+          </div>
+        </div>
+        <!-- Note Editor View -->
+        <div class="editor-container" id="noteEditorView">
+          <div class="input-group">
+            <label for="noteTitle" class="input-label">Title</label>
+            <input type="text" id="noteTitle" class="text-input" placeholder="Note title...">
+          </div>
+          <div class="input-group">
+            <label for="noteContent" class="input-label">Content</label>
+            <textarea id="noteContent" class="text-input text-area" placeholder="Write your note here..."></textarea>
+          </div>
+          <div class="editor-actions">
+            <button class="btn btn-secondary" id="cancelEditBtn">Cancel</button>
+            <button class="btn btn-primary" id="saveNoteBtn">Save Note</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="noteToast" id="noteToast">
+    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M22 11.08V12a10 10 0 11-5.93-9.14"/>
+      <polyline points="22 4 12 14.01 9 11.01"/>
+    </svg>
+    <span id="noteToastMessage">Note saved successfully!</span>
+  </div>
+
+
+ <div id="file-sharing-modal" class="modal">
+    <div class="modal-content-share">
+      <div class="modal-header-share">
+        <h2>File Sharing Hub</h2>
+        <button id="close-modal-btn" class="close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <!-- Group Navigation -->
+        <div class="group-nav">
+          <div class="group-list" id="group-list"></div>
+          <button id="create-group-btn" class="btn">
+            <i class="fas fa-plus"></i> New Group
+          </button>
+        </div>
+        <!-- Search Bar -->
+        <div class="search-container">
+          <input type="text" id="search-input" placeholder="Search files...">
+          <button id="search-btn" class="btn">
+            <i class="fas fa-search"></i>
+          </button>
+        </div>
+        <!-- File Upload Section -->
+        <div class="upload-container">
+          <form id="upload-form" enctype="multipart/form-data">
+            <div class="file-input-container">
+              <input type="file" id="file-input" multiple>
+              <label for="file-input" class="btn upload-btn">
+                <i class="fas fa-cloud-upload-alt"></i> Choose Files
+              </label>
+              <span id="file-selected">No files selected</span>
+            </div>
+            <button type="submit" class="btn upload-submit-btn">
+              <i class="fas fa-upload"></i> Upload
+            </button>
+          </form>
+        </div>
+        <!-- Files List -->
+        <div class="files-container">
+          <h3 id="current-group-name">All Files</h3>
+          <div class="files-list" id="files-list">
+            <div class="loading-spinner" id="loading-spinner">
+              <i class="fas fa-spinner fa-spin"></i>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="create-group-modal" class="modal">
+    <div class="modal-content-share create-group-content">
+      <div class="modal-header-share">
+        <h2>Create New Group</h2>
+        <button id="close-group-modal-btn" class="close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="create-group-form">
+          <div class="form-group">
+            <label for="group-name">Group Name:</label>
+            <input type="text" id="group-name" placeholder="Enter group name" required>
+          </div>
+          <div class="form-group">
+            <label for="group-description">Description (optional):</label>
+            <textarea id="group-description" placeholder="Brief description"></textarea>
+          </div>
+          <button type="submit" class="btn">Create Group</button>
+        </form>
+      </div>
+    </div>
+  </div>
+      <!-- Chat Button -->
+ 
+
+    <!-- Chat Bar -->
+    <div class="chat-bar" id="chatBar">
+        <div class="chat-header">
+            <h3><i class="fas fa-comments"></i> Chat</h3>
+            <button onclick="toggleChat()" class="chat-close-btn">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        
+        <div class="chat-container">
+            <!-- Participants and Groups List -->
+            <div class="chat-participants-list">
+                <ul id="participants">
+                    <li class="active" onclick="selectChat('general')">
+                        <i class="fas fa-globe"></i> General
+                    </li>
+                </ul>
+                <div class="groups-section">
+                    <h4>
+                        <i class="fas fa-users"></i> Groups 
+                        <button id="groupCreateBtn" onclick="openCreateGroupModal()">
+                            <i class="fas fa-plus"></i>
+                        </button>
+                    </h4>
+                    <ul id="groupsList"></ul>
+                </div>
+            </div>
+
+            <!-- Chat Window -->
+            <div class="chat-window">
+                <div id="chat-title" class="chat-title">
+                    <i class="fas fa-globe"></i> General Chat
+                </div>
+                
+                <div class="chat-messages" id="chat-messages"></div>
+                
+                <div id="typingIndicator" class="typing-indicator"></div>
+                
+                <!-- Chat Input Area -->
+                <div class="chat-input">
+                    <div class="input-wrapper">
+                        <div class="editor-wrapper">
+                            <div id="messageInput" class="message-input" contenteditable="true" placeholder="Type your message..."></div>
+                            
+                            <!-- Format Toolbar -->
+                            <div id="formatToolbar" class="format-toolbar">
+                                <div class="toolbar-group">
+                                    <button class="format-btn" data-format="bold" title="Bold">
+                                        <i class="fas fa-bold"></i>
+                                    </button>
+                                    <button class="format-btn" data-format="italic" title="Italic">
+                                        <i class="fas fa-italic"></i>
+                                    </button>
+                                    <button class="format-btn" data-format="underline" title="Underline">
+                                        <i class="fas fa-underline"></i>
+                                    </button>
+                                    <button class="format-btn" data-format="strikethrough" title="Strikethrough">
+                                        <i class="fas fa-strikethrough"></i>
+                                    </button>
+                                </div>
+                                
+                                <div class="toolbar-divider"></div>
+                                
+                                <div class="toolbar-group">
+                                    <button class="format-btn" data-format="code" title="Code">
+                                        <i class="fas fa-code"></i>
+                                    </button>
+                                    <button class="format-btn" id="linkBtn" title="Insert Link">
+                                        <i class="fas fa-link"></i>
+                                    </button>
+                                    <button class="format-btn" id="colorBtn" title="Text Color">
+                                        <i class="fas fa-palette"></i>
+                                    </button>
+                                </div>
+                                
+                                <div class="toolbar-divider"></div>
+                                
+                                <div class="toolbar-group">
+                                    <button class="format-btn" data-format="clear" title="Clear formatting">
+                                        <i class="fas fa-eraser"></i>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- chatEmoji Picker -->
+                            <div class="chatEmoji-picker" id="chatEmojiPicker">
+                                <div class="chatEmoji-header">
+                                    <input type="text" class="chatEmoji-search" placeholder="Search chatEmojis..." id="chatEmojiSearch">
+                                </div>
+                                <div class="chatEmoji-categories">
+                                    <button class="chatEmoji-category active" data-category="all">✨</button>
+                                    <button class="chatEmoji-category" data-category="people">😊</button>
+                                    <button class="chatEmoji-category" data-category="animals">🐶</button>
+                                    <button class="chatEmoji-category" data-category="food">🍔</button>
+                                    <button class="chatEmoji-category" data-category="travel">✈️</button>
+                                    <button class="chatEmoji-category" data-category="activities">⚽</button>
+                                </div>
+                                <div class="chatEmoji-grid" id="chatEmojiGrid"></div>
+                            </div>
+
+                            <!-- Color Picker -->
+                            <div class="color-picker" id="colorPicker">
+                                <div class="color-grid">
+                                    <div class="color-option" data-color="#000000" style="background: #000000;"></div>
+                                    <div class="color-option" data-color="#434343" style="background: #434343;"></div>
+                                    <div class="color-option" data-color="#666666" style="background: #666666;"></div>
+                                    <div class="color-option" data-color="#999999" style="background: #999999;"></div>
+                                    <div class="color-option" data-color="#cccccc" style="background: #cccccc;"></div>
+                                    <div class="color-option" data-color="#ffffff" style="background: #ffffff; border: 1px solid #ddd;"></div>
+                                    <div class="color-option" data-color="#ff0000" style="background: #ff0000;"></div>
+                                    <div class="color-option" data-color="#ff9900" style="background: #ff9900;"></div>
+                                    <div class="color-option" data-color="#ffff00" style="background: #ffff00;"></div>
+                                    <div class="color-option" data-color="#00ff00" style="background: #00ff00;"></div>
+                                    <div class="color-option" data-color="#00ffff" style="background: #00ffff;"></div>
+                                    <div class="color-option" data-color="#0000ff" style="background: #0000ff;"></div>
+                                    <div class="color-option" data-color="#9900ff" style="background: #9900ff;"></div>
+                                    <div class="color-option" data-color="#ff00ff" style="background: #ff00ff;"></div>
+                                </div>
+                            </div>
+
+                            <!-- Link Input -->
+                            <div class="link-input" id="linkInput">
+                                <input type="text" placeholder="Enter URL..." id="urlInput">
+                                <button id="insertLinkBtn">Insert</button>
+                            </div>
+                        </div>
+                        
+                        <div class="input-actions">
+                            <button class="chat-action-btn chatEmoji-trigger" title="Add chatEmoji">
+                                <i class="far fa-smile"></i>
+                            </button>
+                            
+                            <button class="chat-action-btn format-trigger" title="Format text">
+                                <i class="fas fa-palette"></i>
+                            </button>
+                            
+                            <button class="chat-action-btn" id="fileButton" title="Attach file">
+                                <i class="fas fa-paperclip"></i>
+                            </button>
+                            
+                            <button class="chat-action-btn" id="recordButton" title="Record voice">
+                                <i class="fas fa-microphone"></i>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <button id="sendButton" class="send-btn" title="Send message">
+                        <i class="fas fa-paper-plane"></i>
+                    </button>
+                </div>
+
+                <div id="uploadStatus" class="upload-status"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Hidden file input -->
+    <input type="file" id="fileUpload" style="display: none;">
+
+    <!-- Modals -->
+    <div id="createGroupModal" class="modal">
+        <div class="chat-modal-content">
+            <div class="chat-modal-header">
+                <h3><i class="fas fa-users"></i> Create Group</h3>
+                <button class="modal-close" onclick="closeCreateGroupModal()">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="chat-modal-body">
+                <input type="text" id="groupNameInput" placeholder="Enter group name" class="modal-input">
+                <label class="modal-checkbox">
+                    <input type="checkbox" id="groupOpenCheckbox">
+                    <span class="checkmark"></span>
+                    Open group (anyone can join)
+                </label>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" onclick="submitCreateGroup()">Create</button>
+                <button class="btn btn-secondary" onclick="closeCreateGroupModal()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="editMessageModal" class="modal">
+        <div class="chat-modal-content">
+            <div class="chat-modal-header">
+                <h3><i class="fas fa-edit"></i> Edit Message</h3>
+                <button class="modal-close" onclick="closeEditMessageModal()">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="chat-modal-body">
+                <input type="text" id="editMessageInput" placeholder="Edit your message" class="modal-input">
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" onclick="submitEditMessage()">Save</button>
+                <button class="btn btn-secondary" onclick="closeEditMessageModal()">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="joinRequestModal" class="modal">
+        <div class="chat-modal-content">
+            <div class="chat-modal-header">
+                <h3><i class="fas fa-user-plus"></i> Join Request</h3>
+                <button class="modal-close" onclick="closeJoinRequestModal()">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="chat-modal-body">
+                <p id="joinRequestText"></p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" onclick="acceptJoinRequest()">Accept</button>
+                <button class="btn btn-secondary" onclick="declineJoinRequest()">Decline</button>
+            </div>
+        </div>
+    </div>
+
+  <!-- Video Grid (Placeholder) -->
+    <div class="video-grid-poll">
+      <div class="video-container-poll"></div>
+      <div class="video-container-poll"></div>
+    </div>
+
+    <!-- Meeting Controls -->
+    <div style="visibility: hidden;" class="meeting-controls-poll">
+  
+    </div>
+
+    <!-- Poll Creation poller -->
+    <div class="poller" id="poll-creation-poller">
+      <div class="poller-content-poll">
+        <div class="poller-header-poll">
+          <h2>Create Poll</h2>
+          <span class="close-poller-poll">&times;</span>
+        </div>
+        <div class="poller-body-poll">
+          <form id="poll-form">
+            <div class="form-group">
+              <label for="poll-question">Question:</label>
+              <input type="text" id="poll-question" placeholder="Enter your question" required>
+            </div>
+            <div id="options-container">
+              <div class="form-group">
+                <label>Options:</label>
+                <div class="option-input">
+                  <input type="text" class="poll-option" placeholder="Option 1" required>
+                </div>
+                <div class="option-input">
+                  <input type="text" class="poll-option" placeholder="Option 2" required>
+                </div>
+              </div>
+            </div>
+            <button type="button" id="add-option-btn" class="secondary-btn">+ Add Option</button>
+            <div class="form-group">
+              <label for="poll-duration">Duration (seconds):</label>
+              <input type="number" id="poll-duration" min="10" value="120">
+            </div>
+            <div class="form-group checkbox-group">
+              <input type="checkbox" id="anonymous-voting">
+              <label for="anonymous-voting">Anonymous Voting</label>
+            </div>
+            <div class="form-actions">
+              <button type="button" class="cancel-btn">Cancel</button>
+              <button type="submit" class="submit-btn">Launch Poll</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- Active Poll poller -->
+    <div class="poller" id="active-poll-poller">
+      <div class="poller-content-poll poll-poller">
+        <div class="poller-header-poll">
+          <h2 id="poll-title">Poll Question</h2>
+          <span class="close-poller-poll" id="minimize-poll">&times;</span>
+        </div>
+        <div class="poller-body-poll">
+          <div id="poll-options-container"></div>
+          <div id="poll-results-container" class="hidden"></div>
+          <div id="poll-status">
+            <span id="poll-timer"></span>
+            <div id="user-vote-status" class="hidden">
+              You voted for: <span id="user-vote-option"></span>
+            </div>
+          </div>
+          <div class="host-controls hidden" id="host-poll-controls">
+            <button id="end-poll-btn" class="primary-btn">End Poll</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Minimized Poll Indicator -->
+    <div id="minimized-poll-indicator" class="hidden">
+      <div class="indicator-content">
+        <i class="fas fa-chart-bar"></i> Active Poll
+      </div>
+    </div>
+        <link rel="stylesheet" href="/css/poll.css">
+  <script src="/js/poll.js"></script>
+
+
+  </div>
+  <!-- Settings modalForSettings -->
+  <div id="settings-modalForSettings" class="modalForSettings">
+    <div class="modalForSettings-content">
+      <div class="modalForSettings-header">
+        <h2>Settings</h2>
+        <button id="close-settings" class="close-btn-settings"><i class="fas fa-times"></i></button>
+      </div>
+      
+      <div class="modalForSettings-body">
+        <!-- Settings Navigation -->
+        <div class="settings-nav">
+          <div class="nav-item active" data-tab="general">
+            <i class="fas fa-sliders-h"></i>
+            <span>General</span>
+          </div>
+          <div class="nav-item" data-tab="audio">
+            <i class="fas fa-microphone"></i>
+            <span>Audio</span>
+          </div>
+          <div class="nav-item" data-tab="video">
+            <i class="fas fa-video"></i>
+            <span>Video</span>
+          </div>
+          <div class="nav-item" data-tab="screen">
+            <i class="fas fa-desktop"></i>
+            <span>Screen Sharing</span>
+          </div>
+          <div class="nav-item" data-tab="participants">
+            <i class="fas fa-users"></i>
+            <span>Participants</span>
+          </div>
+          <div class="nav-item" data-tab="meeting">
+            <i class="fas fa-clipboard-list"></i>
+            <span>Meeting</span>
+          </div>
+          <div class="nav-item" data-tab="chat">
+            <i class="fas fa-comment-alt"></i>
+            <span>Chat & Messaging</span>
+          </div>
+          <div class="nav-item" data-tab="privacy">
+            <i class="fas fa-shield-alt"></i>
+            <span>Privacy & Security</span>
+          </div>
+       
+          <div class="nav-item" data-tab="notifications">
+            <i class="fas fa-bell"></i>
+            <span>Notifications</span>
+          </div>
+          <div class="nav-item" data-tab="advanced">
+            <i class="fas fa-code"></i>
+            <span>Advanced</span>
+          </div>
+        </div>
+        
+        <!-- Settings Content -->
+        <div class="settings-content">
+          <!-- General Settings -->
+          <div id="general" class="settings-tab active">
+            <h3>General Settings</h3>
+            <div class="setting-group-settings">
+            
+          
+           
+              <div class="setting-item">
+                <span>Always show meeting controls</span>
+                <label class="toggle">
+                  <input type="checkbox" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Audio Settings -->
+          <div id="audio" class="settings-tab">
+            <h3>Audio Settings</h3>
+            <div class="setting-group-settings">
+              <div class="setting-item">
+                <span>Select Microphone</span>
+                <select class="dropdown">
+                  <option>Loading microphones...</option>
+                </select>
+              </div>
+           
+           
+              <div class="setting-item">
+                <span>Noise Suppression</span>
+                <label class="toggle">
+                  <input type="checkbox" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div class="audio-test-mic">
+                <button class="test-btn-mic">Test Microphone</button>
+                <div class="audio-meter-mic">
+                  <div class="meter-bar-mic"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Video Settings -->
+          <div id="video" class="settings-tab">
+            <h3>Video Settings</h3>
+            <div class="setting-group-settings">
+              <div class="setting-item">
+                <span>Select Camera</span>
+                <select class="dropdown">
+                  <option>Default Camera</option>
+                  <option>External Webcam</option>
+                  <option>Front Camera</option>
+                </select>
+              </div>
+          
+             
+              <div class="setting-item">
+                <span>Virtual Background</span>
+                <div class="bg-options">
+                  <div class="bg-option active">
+                    <div class="bg-thumbnail none"></div>
+                    <span>None</span>
+                  </div>
+                  <div class="bg-option">
+                    <div class="bg-thumbnail blur"></div>
+                    <span>Blur</span>
+                  </div>
+                  <div class="bg-option">
+                    <div class="bg-thumbnail beach"></div>
+                    <span>Beach</span>
+                  </div>
+                  <div class="bg-option">
+                    <div class="bg-thumbnail office"></div>
+                    <span>Office</span>
+                  </div>
+                  <div class="bg-option">
+                    <div class="bg-thumbnail custom">
+                      <i class="fas fa-plus"></i>
+                    </div>
+                    <span>Custom</span>
+                  </div>
+                </div>
+              </div>
+              <div class="video-preview">
+                <div class="video-monitor">
+                  <i class="fas fa-user"></i>
+                </div>
+                <button class="test-btn-mic">Test Video</button>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Screen Sharing Settings -->
+          <div id="screen" class="settings-tab">
+            <h3>Screen Sharing Settings</h3>
+            <div class="setting-group-settings">
+         
+              <div class="setting-item">
+                <span>Allow others to share screen</span>
+                <label class="toggle">
+                  <input type="checkbox" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div class="setting-item">
+                <span>Request permission before allowing shares</span>
+                <label class="toggle">
+                  <input type="checkbox" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div class="setting-item">
+                <span>Share computer sound</span>
+                <label class="toggle">
+                  <input type="checkbox">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div class="setting-item">
+                <span>Optimize for video clips</span>
+                <label class="toggle">
+                  <input type="checkbox">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Participant Settings -->
+          <div id="participants" class="settings-tab">
+            <h3>Participant Settings</h3>
+            <div class="setting-group-settings">
+              <div class="setting-item">
+                <span>Display Name</span>
+                <input type="text" value="Your Name" class="text-input">
+              </div>
+              <div class="setting-item">
+                <span>Allow participants to rename themselves</span>
+                <label class="toggle">
+                  <input type="checkbox" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div class="setting-item">
+                <span>Allow participants to unmute themselves</span>
+                <label class="toggle">
+                  <input type="checkbox" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div class="setting-item">
+                <span>Allow hand raising</span>
+                <label class="toggle">
+                  <input type="checkbox" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div class="setting-item">
+                <span>Host controls</span>
+                <div class="controls-list">
+                  <div class="control-item">
+                    <input type="checkbox" checked id="control-mute">
+                    <label for="control-mute">Mute all participants</label>
+                  </div>
+                  <div class="control-item">
+                    <input type="checkbox" checked id="control-kick">
+                    <label for="control-kick">Remove participants</label>
+                  </div>
+                  <div class="control-item">
+                    <input type="checkbox" checked id="control-spotlight">
+                    <label for="control-spotlight">Spotlight video</label>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Meeting Settings -->
+          <div id="meeting" class="settings-tab">
+            <h3>Meeting Settings</h3>
+            <div class="setting-group-settings">
+              <div class="setting-item">
+           
+                <span>Meeting ID</span>
+                <div class="id-display">
+                  <input type="text" value="" readonly class="text-input">
+                  <button class="copy-btn"><i class="fas fa-copy"></i></button>
+                </div>
+              </div>
+              <div class="setting-item">
+                <span>Meeting Passcode</span>
+                <div class="passcode-display">
+                  <input type="text" value="123456" class="text-input">
+                  <button class="copy-btn"><i class="fas fa-copy"></i></button>
+                </div>
+              </div>
+           <script>
+            
+           </script>
+              <div class="setting-item">
+                <span>Enable waiting room</span>
+                <label class="toggle">
+                  <input type="checkbox" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              
+              
+                <div class="setting-item">
+                <span>Lock Meeting</span>
+                <label class="toggle">
+                  <input type="checkbox" id="lockMeetingToggle">
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              
+              <div class="setting-item" id="recording-permission-setting">
+                <span>Record meeting</span>
+                <select class="dropdown" id="recording-permission-dropdown">
+                  <option value="Don't Record">Don't Record</option>
+                  <option value="Record to Computer">Record to Computer</option>
+                </select>
+              </div>
+              <div class="meeting-controls">
+                <button class="meeting-btn end">End Meeting</button>
+                <button class="meeting-btn leave">Leave Meeting</button>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Chat & Messaging Settings -->
+          <div id="chat" class="settings-tab">
+            <h3>Chat & Messaging</h3>
+            <div class="setting-group-settings">
+              <div class="setting-item">
+                <span>Enable Chat</span>
+                <label class="toggle">
+                  <input type="checkbox" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div style="display: none;" class="setting-item">
+                <span>Allow Private Messages</span>
+                <label class="toggle">
+                  <input type="checkbox" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+          
+              <div class="setting-item">
+                <span>File Sharing</span>
+                <label class="toggle">
+                  <input type="checkbox" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+             
+              <div class="setting-item">
+                <span>Allow Emoji Reactions</span>
+                <label class="toggle">
+                  <input type="checkbox" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Privacy & Security Settings -->
+          <div id="privacy" class="settings-tab">
+            <h3>Privacy & Security</h3>
+            <div class="setting-group-settings">
+         
+              <div class="setting-item">
+                <span>Access Permissions</span>
+                <select class="dropdown">
+                  <option>Anyone with the Link</option>
+                  <option>Only Invited Users</option>
+                  <option>Domain Restricted</option>
+                </select>
+              </div>
+           
+              <div class="setting-item">
+                <div class="data-policy">
+                  <button class="policy-btn">View Privacy Policy</button>
+                  <button class="policy-btn">Data Usage Settings</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Notifications Settings -->
+          <div id="notifications" class="settings-tab">
+            <h3>Notifications</h3>
+            <div class="setting-group-settings">
+              <div class="setting-item">
+                <span>Sound Alerts</span>
+                <label class="toggle">
+                  <input type="checkbox" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <div class="setting-item">
+                <span>Notification Volume</span>
+                <div class="volume-control">
+                  <i class="fas fa-volume-down"></i>
+                  <input type="range" min="0" max="100" value="50" class="slider">
+                  <i class="fas fa-volume-up"></i>
+                </div>
+              </div>
+         
+              <div class="notification-items">
+               
+         
+               
+            
+              </div>
+            </div>
+          </div>
+          
+          <!-- Advanced Settings -->
+          <div id="advanced" class="settings-tab">
+            <h3>Advanced Settings</h3>
+            <div class="setting-group-settings">
+             
+       
+              <div class="setting-item">
+                <span>Enable Echo Cancellation</span>
+                <label class="toggle">
+                  <input type="checkbox" checked>
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+           
+              
+              <div class="system-info">
+                <button class="info-btn"><i class="fas fa-info-circle"></i> System Information</button>
+           
+                <button class="info-btn"><i class="fas fa-file-alt"></i> View Logs</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      
+      <div class="modalForSettings-footer">
+        <button id="reset-settings" class="secondary-btn">Reset All</button>
+        <button id="save-settings" class="primary-btn">Save Changes</button>
+      </div>
+    </div>
+  </div>
+
+
+
+    
+    <!-- Floating Action Menu -->
+    <div style="display: none;" class="action-menu">
+        <button class="action-toggle" id="actionToggle">
+            <div class="action-icon">
+                <span class="point"></span>
+                <span class="point"></span>
+                <span class="point"></span>
+            </div>
+        </button>
+        <div class="action-panel" id="actionPanel">
+            <div class="action-option" >
+                <i class="fas fa-video icon"></i>
+                <span class="label">Start Capture</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Overlay Dialog -->
+    <div class="dialog-overlay" id="captureDialog">
+        <div class="dialog-box">
+            <div class="dialog-header">
+                <h2 class="dialog-title">Screen Capture</h2>
+                <button class="dismiss-btn" id="dismissDialog">&times;</button>
+            </div>
+            <div class="dialog-content">
+                <div class="nav-tabs">
+                    <div class="nav-tab active" data-tab="capture">Capture</div>
+                    <div class="nav-tab" data-tab="archive">Capture Archive</div>
+                </div>
+                
+                <div class="tab-section active" id="captureSection">
+                    <div class="capture-panel">
+                        <div class="profile-info">
+                            <div class="profile-icon" id="profileInitials"></div>
+                            <div class="profile-name" id="profileName"></div>
+                        </div>
+                        
+                        <div class="capture-settings">
+                            <div class="setting-group">
+                                <label class="setting-label">Capture Source:</label>
+                                <select class="capture-selector" id="captureSource">
+                                    <option value="screen">Full Display</option>
+                                    <option value="window">App Window</option>
+                                    <option value="tab">Browser Tab</option>
+                                </select>
+                            </div>
+                            
+                            <div class="switch-wrapper">
+                                <span class="label">Enable Audio:</span>
+                                <label class="switch-control">
+                                    <input type="checkbox" class="toggle-input" id="soundSwitch" checked>
+                                    <span class="switch-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                        
+                        <div class="capture-controls">
+                            <div class="time-display" id="captureTimer">00:00:00</div>
+                            <div class="control-actions">
+                                <button class="action-control main" id="beginBtn">
+                                    <i class="fas fa-play icon"></i>
+                                    <span class="label">Begin</span>
+                                </button>
+                                <button class="action-control standard inactive" id="PauseBtn">
+                                    <i class="fas fa-pause icon"></i>
+                                    <span class="label">Pause</span>
+                                </button>
+                                <button class="action-control negative inactive" id="endBtn">
+                                    <i class="fas fa-stop icon"></i>
+                                    <span class="label">End</span>
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div class="notification" id="statusMessage"></div>
+                        
+                        <div class="preview-area" id="previewArea">
+                            <div class="empty-preview">No preview available</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="tab-section" id="archiveSection">
+                    <div class="capture-history" id="captureArchive">
+                        <!-- Captures will be dynamically added here -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Capture Status -->
+    <div class="capture-status" id="captureStatus" style="display: none;">
+        <div class="status-dot"></div>
+        <span>Capturing...</span>
+        <span id="statusTimer">00:00:00</span>
+    </div>
+
+<script>
+   let mediaRecorder;
+        let audioChunks = [];
+        let audioContext;
+        let analyser;
+        let microphone;
+        let dataArray;
+        let isRecording = false;
+        let recordedAudio = null;
+
+        const testBtn = document.querySelector('.test-btn-mic');
+        const meterBar = document.querySelector('.meter-bar-mic');
+
+        testBtn.addEventListener('click', async () => {
+            if (!isRecording && !recordedAudio) {
+                await startRecording();
+            } else if (isRecording) {
+                stopRecording();
+            } else {
+                playRecording();
+            }
+        });
+
+        async function startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                
+                // Setup audio analysis for meter
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                analyser = audioContext.createAnalyser();
+                microphone = audioContext.createMediaStreamSource(stream);
+                microphone.connect(analyser);
+                
+                analyser.fftSize = 256;
+                const bufferLength = analyser.frequencyBinCount;
+                dataArray = new Uint8Array(bufferLength);
+                
+                // Setup recording
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+                
+                mediaRecorder.ondataavailable = event => {
+                    audioChunks.push(event.data);
+                };
+                
+                mediaRecorder.onstop = () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                    recordedAudio = URL.createObjectURL(audioBlob);
+                    testBtn.textContent = 'Play Recording';
+                    testBtn.classList.remove('recording');
+                };
+                
+                mediaRecorder.start();
+                isRecording = true;
+                testBtn.textContent = 'Stop Recording';
+                testBtn.classList.add('recording');
+                
+                // Start audio level monitoring
+                updateMeter();
+                
+                // Auto-stop after 5 seconds
+                setTimeout(() => {
+                    if (isRecording) {
+                        stopRecording();
+                    }
+                }, 5000);
+                
+            } catch (err) {
+                console.error('Error accessing microphone:', err);
+                testBtn.textContent = 'Microphone Access Denied';
+            }
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && isRecording) {
+                mediaRecorder.stop();
+                isRecording = false;
+                
+                // Stop all tracks
+                mediaRecorder.stream.getTracks().forEach(track => track.stop());
+                
+                if (audioContext) {
+                    audioContext.close();
+                }
+                
+                meterBar.style.width = '0%';
+            }
+        }
+
+        function playRecording() {
+            if (recordedAudio) {
+                const audio = new Audio(recordedAudio);
+                testBtn.textContent = 'Playing...';
+                audio.play();
+                
+                audio.onended = () => {
+                    testBtn.textContent = 'Test Microphone';
+                    recordedAudio = null;
+                };
+            }
+        }
+
+        function updateMeter() {
+            if (!isRecording) return;
+            
+            analyser.getByteFrequencyData(dataArray);
+            
+            let sum = 0;
+            for (let i = 0; i < dataArray.length; i++) {
+                sum += dataArray[i];
+            }
+            
+            const average = sum / dataArray.length;
+            const percentage = (average / 255) * 100;
+            
+            meterBar.style.width = percentage + '%';
+            
+            requestAnimationFrame(updateMeter);
+        }
+</script>
+
+    <div class="setting-item" id="recording-permission-setting">
+        <span>Record meeting</span>
+        <select class="dropdown" id="recording-permission-dropdown">
+            <option value="Don't Record">Don't Record</option>
+            <option value="Record to Computer">Record to Computer</option>
+        </select>
+    </div>
+
+    <!-- Permission Request Modal -->
+    <div class="permission-request-modal" id="permissionRequestModal">
+        <div class="permission-request-content">
+            <div class="permission-request-header">
+                <svg class="permission-request-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <path d="M12 6v6l4 2"></path>
+                </svg>
+                <div class="permission-request-title">Recording Permission Request</div>
+            </div>
+            <div class="permission-request-body">
+                A participant is requesting permission to record this meeting.
+                <div class="participant-info-record">
+                    <div class="participant-name-record" id="requestParticipantName">Participant Name</div>
+                    <div class="participant-id" id="requestParticipantId">participant_id</div>
+                </div>
+                Would you like to allow this participant to record the meeting?
+            </div>
+            <div class="permission-request-checkbox">
+                <input type="checkbox" id="dontShowAgain">
+                <label for="dontShowAgain">Don't show permission requests again</label>
+            </div>
+            <div class="permission-request-actions">
+                <button class="permission-request-btn permission-request-btn-deny" id="denyRequest">Deny</button>
+                <button class="permission-request-btn permission-request-btn-approve" id="approveRequest">Allow Recording</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Notification Badge -->
+    <div class="notification-badge" id="notificationBadge" style="display: none;">
+        New recording request
+    </div>
+
+
+
+</body>
+</html>
+<script>
+  (function() {
+    let tapTimeout;
+    let lastTap = 0;
+    
+    // Function to enter fullscreen
+    function enterFullscreen() {
+        const elem = document.documentElement;
+        if (elem.requestFullscreen) {
+            elem.requestFullscreen();
+        } else if (elem.webkitRequestFullscreen) { // Safari
+            elem.webkitRequestFullscreen();
+        } else if (elem.msRequestFullscreen) { // IE11
+            elem.msRequestFullscreen();
+        } else if (elem.mozRequestFullScreen) { // Firefox
+            elem.mozRequestFullScreen();
+        }
+    }
+    
+    // Function to exit fullscreen
+    function exitFullscreen() {
+        if (document.exitFullscreen) {
+            document.exitFullscreen();
+        } else if (document.webkitExitFullscreen) { // Safari
+            document.webkitExitFullscreen();
+        } else if (document.msExitFullscreen) { // IE11
+            document.msExitFullscreen();
+        } else if (document.mozCancelFullScreen) { // Firefox
+            document.mozCancelFullScreen();
+        }
+    }
+    
+    // Function to check if currently in fullscreen
+    function isFullscreen() {
+        return !!(document.fullscreenElement || 
+                 document.webkitFullscreenElement || 
+                 document.msFullscreenElement || 
+                 document.mozFullScreenElement);
+    }
+    
+    // Function to toggle fullscreen
+    function toggleFullscreen() {
+        if (isFullscreen()) {
+            exitFullscreen();
+        } else {
+            enterFullscreen();
+        }
+    }
+    
+    // Function to check if element is interactive
+    function isInteractiveElement(element) {
+        const interactiveTags = ['BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'A', 'LABEL'];
+        const interactiveRoles = ['button', 'link', 'tab', 'option', 'menuitem'];
+        
+        // Check if element or any parent is interactive
+        let current = element;
+        while (current && current !== document.body) {
+            if (interactiveTags.includes(current.tagName) || 
+                interactiveRoles.includes(current.getAttribute('role')) ||
+                current.onclick || 
+                current.style.cursor === 'pointer' ||
+                current.getAttribute('tabindex') !== null) {
+                return true;
+            }
+            current = current.parentElement;
+        }
+        return false;
+    }
+    
+    // Handle double tap/click
+    function handleDoubleTap(event) {
+        const currentTime = new Date().getTime();
+        const tapLength = currentTime - lastTap;
+        
+        // Clear any existing timeout
+        if (tapTimeout) {
+            clearTimeout(tapTimeout);
+        }
+        
+        // Check if it's a double tap (within 300ms)
+        if (tapLength < 300 && tapLength > 0) {
+            // Check if the target is not an interactive element
+            if (!isInteractiveElement(event.target)) {
+                event.preventDefault();
+                toggleFullscreen();
+            }
+        }
+        
+        lastTap = currentTime;
+    }
+    
+    // Add event listeners
+    document.addEventListener('click', handleDoubleTap);
+    document.addEventListener('touchend', handleDoubleTap);
+    
+    // Optional: Add keyboard shortcut (F11 or Escape)
+    document.addEventListener('keydown', function(event) {
+        if (event.key === 'F11') {
+            event.preventDefault();
+            toggleFullscreen();
+        } else if (event.key === 'Escape' && isFullscreen()) {
+            exitFullscreen();
+        }
+    });
+    
+    // Optional: Console log for debugging
+    console.log('Double tap fullscreen script loaded. Double tap on page body to toggle fullscreen.');
+})();
+</script>
+<script>
+  const container = document.getElementById('secondaryVideosSection');
+
+  if (container) {
+    container.style.overflow = 'hidden';
+
+    // Loop through all child elements and disable their scrollbars too
+    const allChildren = container.querySelectorAll('*');
+    allChildren.forEach(el => {
+      el.style.overflow = 'hidden';
+      el.style.scrollbarWidth = 'none'; // Firefox
+      el.style.overscrollBehavior = 'none';
+
+      // Hide scrollbar for WebKit browsers
+      el.style.setProperty('::-webkit-scrollbar', 'display: none');
+    });
+  }
+</script>
+
+<style>
+  #secondaryVideosSection,
+  #secondaryVideosSection * {
+  
+    scrollbar-width: none !important; /* Firefox */
+  }
+
+  #secondaryVideosSection *::-webkit-scrollbar {
+    display: none !important; /* Chrome, Safari */
+  }
+</style>
