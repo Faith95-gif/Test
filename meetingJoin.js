@@ -1,1538 +1,1326 @@
-class WebRTCManager {
-        constructor(socket) {
-          this.socket = socket;
-          this.localStream = null;
-          this.screenStream = null;
-          this.peerConnections = new Map();
-          this.remoteStreams = new Map();
-          this.isScreenSharing = false;
-          this.audioContext = null;
-          this.isReady = false;
-          this.originalMicrophoneTrack = null;
-          
-          this.configuration = {
-            iceServers: [
-              { urls: 'stun:stun.l.google.com:19302' },
-              { urls: 'stun:stun1.l.google.com:19302' }
-            ]
-          };
+// Global variables
+let socket;
+let localStream;
+let peerConnections = new Map();
+let participants = new Map();
+let currentUser = null;
+let meetingId = null;
+let isHost = false;
+let currentView = 'sidebar';
+let spotlightedParticipant = null;
+let pinnedParticipant = null;
+let raisedHands = new Set();
+let screenShares = new Map();
+let isHandRaised = false;
+let currentGridPage = 0;
+let participantsPerPage = 25;
+let totalGridPages = 1;
 
-          this.setupSocketListeners();
-        }
+// DOM elements
+let videoContainer, mainVideoSection, secondaryVideosSection;
+let micBtn, cameraBtn, screenShareBtn, participantsBtn, reactionsBtn, handBtn, endCallBtn;
+let participantsPanel, participantsList, participantsCount;
+let viewToggleBtn, emojiPicker, reactionOverlay;
+let meetingTitle, meetingTime;
+let gridNavigation, gridPrevBtn, gridNextBtn, gridSetIndicator;
 
-        setupSocketListeners() {
-          this.socket.on('initiate-connection', async (data) => {
-            const { targetSocketId, shouldCreateOffer } = data;
-            console.log(`Initiating connection with ${targetSocketId}, shouldCreateOffer: ${shouldCreateOffer}`);
-            
-            if (shouldCreateOffer) {
-              await this.createPeerConnection(targetSocketId, true);
-            } else {
-              await this.createPeerConnection(targetSocketId, false);
-            }
-          });
+// Initialize the application
+document.addEventListener('DOMContentLoaded', () => {
+  initializeDOM();
+  initializeSocketConnection();
+  setupEventListeners();
+  startMeetingTimer();
+  
+  // Get meeting ID from URL
+  const pathParts = window.location.pathname.split('/');
+  meetingId = pathParts[pathParts.length - 1];
+  
+  // Set meeting title
+  if (meetingTitle) {
+    meetingTitle.textContent = `Meeting ${meetingId}`;
+  }
+});
 
-          this.socket.on('offer', async (data) => {
-            await this.handleOffer(data);
-          });
+function initializeDOM() {
+  // Video container elements
+  videoContainer = document.getElementById('videoContainer');
+  mainVideoSection = document.getElementById('mainVideoSection');
+  secondaryVideosSection = document.getElementById('secondaryVideosSection');
+  
+  // Control buttons
+  micBtn = document.getElementById('micBtn');
+  cameraBtn = document.getElementById('cameraBtn');
+  screenShareBtn = document.getElementById('screenShareBtn');
+  participantsBtn = document.getElementById('participantsBtn');
+  reactionsBtn = document.getElementById('reactionsBtn');
+  handBtn = document.getElementById('handBtn');
+  endCallBtn = document.getElementById('endCallBtn');
+  
+  // Participants panel
+  participantsPanel = document.getElementById('participantsPanel');
+  participantsList = document.getElementById('participantsList');
+  participantsCount = document.getElementById('participantsCount');
+  
+  // Other elements
+  viewToggleBtn = document.getElementById('viewToggleBtn');
+  emojiPicker = document.getElementById('emojiPicker');
+  reactionOverlay = document.getElementById('reactionOverlay');
+  meetingTitle = document.getElementById('meetingTitle');
+  meetingTime = document.getElementById('meetingTime');
+  
+  // Grid navigation elements
+  gridNavigation = document.getElementById('gridNavigation');
+  gridPrevBtn = document.getElementById('gridPrevBtn');
+  gridNextBtn = document.getElementById('gridNextBtn');
+  gridSetIndicator = document.getElementById('gridSetIndicator');
+}
 
-          this.socket.on('answer', async (data) => {
-            await this.handleAnswer(data);
-          });
+function initializeSocketConnection() {
+  socket = io();
+  
+  socket.on('connect', () => {
+    console.log('Connected to server');
+    requestMediaPermissions();
+  });
+  
+  socket.on('joined-meeting', (data) => {
+    console.log('Joined meeting:', data);
+    meetingId = data.meetingId;
+    isHost = data.isHost;
+    spotlightedParticipant = data.spotlightedParticipant;
+    
+    // Update participants
+    data.participants.forEach(participant => {
+      participants.set(participant.socketId, participant);
+    });
+    
+    // Update raised hands
+    if (data.raisedHands) {
+      raisedHands = new Set(data.raisedHands);
+    }
+    
+    // Update screen shares
+    if (data.screenShares) {
+      data.screenShares.forEach(([socketId, shareData]) => {
+        screenShares.set(socketId, shareData);
+      });
+    }
+    
+    updateParticipantsList();
+    updateParticipantsCount();
+    renderVideoGrid();
+    
+    // Signal that we're ready for WebRTC connections
+    socket.emit('participant-ready');
+  });
+  
+  socket.on('participant-joined', (data) => {
+    console.log('Participant joined:', data.participant);
+    participants.set(data.participant.socketId, data.participant);
+    updateParticipantsList();
+    updateParticipantsCount();
+    renderVideoGrid();
+  });
+  
+  socket.on('participant-left', (data) => {
+    console.log('Participant left:', data.socketId);
+    participants.delete(data.socketId);
+    peerConnections.delete(data.socketId);
+    updateParticipantsList();
+    updateParticipantsCount();
+    renderVideoGrid();
+    
+    // Remove video element
+    const videoElement = document.getElementById(`video-${data.socketId}`);
+    if (videoElement) {
+      videoElement.remove();
+    }
+  });
+  
+  socket.on('meeting-ended', () => {
+    showToast('Meeting has ended', 'info');
+    setTimeout(() => {
+      window.location.href = '/';
+    }, 2000);
+  });
+  
+  socket.on('meeting-locked', (data) => {
+    showModal('Meeting Locked', data.message, () => {
+      window.location.href = '/';
+    });
+  });
+  
+  socket.on('kicked-from-meeting', () => {
+    showToast('You have been removed from the meeting', 'error');
+    setTimeout(() => {
+      window.location.href = '/';
+    }, 2000);
+  });
+  
+  // WebRTC signaling
+  socket.on('initiate-connection', async (data) => {
+    console.log('Initiating connection with:', data.targetSocketId);
+    await createPeerConnection(data.targetSocketId, data.shouldCreateOffer, data.iceServers);
+  });
+  
+  socket.on('offer', async (data) => {
+    console.log('Received offer from:', data.sender);
+    const pc = peerConnections.get(data.sender);
+    if (pc) {
+      await pc.setRemoteDescription(data.offer);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      
+      socket.emit('answer', {
+        target: data.sender,
+        answer: answer
+      });
+    }
+  });
+  
+  socket.on('answer', async (data) => {
+    console.log('Received answer from:', data.sender);
+    const pc = peerConnections.get(data.sender);
+    if (pc) {
+      await pc.setRemoteDescription(data.answer);
+    }
+  });
+  
+  socket.on('ice-candidate', async (data) => {
+    console.log('Received ICE candidate from:', data.sender);
+    const pc = peerConnections.get(data.sender);
+    if (pc && data.candidate) {
+      await pc.addIceCandidate(data.candidate);
+    }
+  });
+  
+  socket.on('restart-connection', async (data) => {
+    console.log('Restarting connection with:', data.targetSocketId);
+    const pc = peerConnections.get(data.targetSocketId);
+    if (pc) {
+      pc.close();
+      peerConnections.delete(data.targetSocketId);
+    }
+    
+    // Get ICE servers and recreate connection
+    try {
+      const response = await fetch('/api/ice-servers');
+      const { iceServers } = await response.json();
+      await createPeerConnection(data.targetSocketId, true, iceServers);
+    } catch (error) {
+      console.error('Error restarting connection:', error);
+    }
+  });
+  
+  // Meeting events
+  socket.on('participant-spotlighted', (data) => {
+    spotlightedParticipant = data.spotlightedParticipant;
+    data.participants.forEach(participant => {
+      participants.set(participant.socketId, participant);
+    });
+    updateParticipantsList();
+    renderVideoGrid();
+  });
+  
+  socket.on('spotlight-removed', (data) => {
+    spotlightedParticipant = null;
+    data.participants.forEach(participant => {
+      participants.set(participant.socketId, participant);
+    });
+    updateParticipantsList();
+    renderVideoGrid();
+  });
+  
+  socket.on('participant-pinned', (data) => {
+    pinnedParticipant = data.pinnedParticipant;
+    renderVideoGrid();
+  });
+  
+  socket.on('hand-raised', (data) => {
+    raisedHands.add(data.socketId);
+    const participant = participants.get(data.socketId);
+    if (participant) {
+      participant.handRaised = true;
+    }
+    updateParticipantsList();
+    renderVideoGrid();
+    showToast(`${data.participantName} raised their hand`, 'info');
+  });
+  
+  socket.on('hand-lowered', (data) => {
+    raisedHands.delete(data.socketId);
+    const participant = participants.get(data.socketId);
+    if (participant) {
+      participant.handRaised = false;
+    }
+    updateParticipantsList();
+    renderVideoGrid();
+  });
+  
+  socket.on('participant-audio-changed', (data) => {
+    const participant = participants.get(data.socketId);
+    if (participant) {
+      participant.isMuted = data.isMuted;
+      updateParticipantsList();
+      renderVideoGrid();
+    }
+  });
+  
+  socket.on('participant-video-changed', (data) => {
+    const participant = participants.get(data.socketId);
+    if (participant) {
+      participant.isCameraOff = data.isCameraOff;
+      updateParticipantsList();
+      renderVideoGrid();
+    }
+  });
+  
+  socket.on('force-mute', (data) => {
+    if (data.isMuted && localStream) {
+      const audioTrack = localStream.getAudioTracks()[0];
+      if (audioTrack) {
+        audioTrack.enabled = false;
+        micBtn.setAttribute('data-active', 'false');
+        micBtn.innerHTML = '🔇';
+        showToast('You have been muted by the host', 'info');
+      }
+    }
+  });
+  
+  socket.on('screen-share-started', (data) => {
+    screenShares.set(data.participantId, {
+      streamId: data.streamId,
+      startedAt: new Date()
+    });
+    
+    const participant = participants.get(data.participantId);
+    if (participant) {
+      participant.isScreenSharing = true;
+    }
+    
+    updateParticipantsList();
+    renderVideoGrid();
+    showToast(`${data.participantName} started screen sharing`, 'info');
+  });
+  
+  socket.on('screen-share-stopped', (data) => {
+    screenShares.delete(data.participantId);
+    
+    const participant = participants.get(data.participantId);
+    if (participant) {
+      participant.isScreenSharing = false;
+    }
+    
+    updateParticipantsList();
+    renderVideoGrid();
+  });
+  
+  socket.on('reaction-received', (data) => {
+    showReaction(data.emoji, data.participantName, data.socketId);
+  });
+  
+  socket.on('meeting-error', (data) => {
+    showToast(data.message, 'error');
+  });
+  
+  socket.on('action-error', (data) => {
+    showToast(data.message, 'error');
+  });
+}
 
-          this.socket.on('ice-candidate', async (data) => {
-            await this.handleIceCandidate(data);
-          });
-        }
+async function requestMediaPermissions() {
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: true
+    });
+    
+    // Set current user info
+    const participantName = prompt('Enter your name:') || 'Anonymous';
+    currentUser = {
+      name: participantName,
+      socketId: socket.id
+    };
+    
+    // Join the meeting
+    socket.emit('join-meeting', {
+      meetingId: meetingId,
+      participantName: participantName
+    });
+    
+  } catch (error) {
+    console.error('Error accessing media devices:', error);
+    showToast('Failed to access camera/microphone', 'error');
+  }
+}
 
-        async initialize() {
-          try {
-            this.localStream = await navigator.mediaDevices.getUserMedia({
-              video: { 
-                width: { ideal: 1280 }, 
-                height: { ideal: 720 },
-                frameRate: { ideal: 30 }
-              },
-              audio: { 
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true
-              }
-            });
-            
-            // Store original microphone track
-            this.originalMicrophoneTrack = this.localStream.getAudioTracks()[0];
-            
-            // Start audio level monitoring
-            this.startAudioLevelMonitoring();
-            
-            console.log('Local stream initialized');
-            return true;
-          } catch (error) {
-            console.error('Error accessing media devices:', error);
-            return false;
-          }
-        }
+async function createPeerConnection(targetSocketId, shouldCreateOffer, iceServers) {
+  const pc = new RTCPeerConnection({
+    iceServers: iceServers || [
+      { urls: 'stun:stun.l.google.com:19302' }
+    ]
+  });
+  
+  peerConnections.set(targetSocketId, pc);
+  
+  // Add local stream tracks
+  if (localStream) {
+    localStream.getTracks().forEach(track => {
+      pc.addTrack(track, localStream);
+    });
+  }
+  
+  // Handle remote stream
+  pc.ontrack = (event) => {
+    console.log('Received remote track from:', targetSocketId);
+    const remoteStream = event.streams[0];
+    updateVideoElement(targetSocketId, remoteStream);
+  };
+  
+  // Handle ICE candidates
+  pc.onicecandidate = (event) => {
+    if (event.candidate) {
+      socket.emit('ice-candidate', {
+        target: targetSocketId,
+        candidate: event.candidate
+      });
+    }
+  };
+  
+  // Handle connection state changes
+  pc.onconnectionstatechange = () => {
+    console.log(`Connection state with ${targetSocketId}:`, pc.connectionState);
+    
+    socket.emit('connection-state-change', {
+      targetSocketId: targetSocketId,
+      state: pc.connectionState
+    });
+    
+    if (pc.connectionState === 'failed') {
+      socket.emit('connection-failed', {
+        targetSocketId: targetSocketId
+      });
+    }
+  };
+  
+  // Create offer if needed
+  if (shouldCreateOffer) {
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      
+      socket.emit('offer', {
+        target: targetSocketId,
+        offer: offer
+      });
+    } catch (error) {
+      console.error('Error creating offer:', error);
+    }
+  }
+}
 
-        setReady() {
-          this.isReady = true;
-          this.socket.emit('participant-ready');
-        }
+function updateVideoElement(socketId, stream) {
+  let videoWrapper = document.getElementById(`video-${socketId}`);
+  
+  if (!videoWrapper) {
+    videoWrapper = createVideoWrapper(socketId);
+  }
+  
+  const videoElement = videoWrapper.querySelector('.video-frame');
+  if (videoElement && stream) {
+    videoElement.srcObject = stream;
+  }
+}
 
-        startAudioLevelMonitoring() {
-          if (!this.localStream) return;
+function createVideoWrapper(socketId) {
+  const participant = participants.get(socketId);
+  if (!participant) return null;
+  
+  const videoWrapper = document.createElement('div');
+  videoWrapper.className = 'video-wrapper';
+  videoWrapper.id = `video-${socketId}`;
+  
+  const videoElement = document.createElement('video');
+  videoElement.className = 'video-frame';
+  videoElement.autoplay = true;
+  videoElement.playsInline = true;
+  videoElement.muted = socketId === socket.id; // Mute own video to prevent feedback
+  
+  const participantName = document.createElement('div');
+  participantName.className = 'participant-name';
+  participantName.textContent = participant.name;
+  
+  videoWrapper.appendChild(videoElement);
+  videoWrapper.appendChild(participantName);
+  
+  // Add badges and indicators
+  updateVideoWrapperBadges(videoWrapper, participant);
+  
+  return videoWrapper;
+}
 
-          try {
-            this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            const analyser = this.audioContext.createAnalyser();
-            const microphone = this.audioContext.createMediaStreamSource(this.localStream);
-            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+function updateVideoWrapperBadges(videoWrapper, participant) {
+  // Remove existing badges
+  const existingBadges = videoWrapper.querySelectorAll('.spotlight-badge, .pin-badge, .hand-raised-indicator, .audio-indicator, .video-label');
+  existingBadges.forEach(badge => badge.remove());
+  
+  // Add spotlight badge
+  if (participant.isSpotlighted) {
+    const spotlightBadge = document.createElement('div');
+    spotlightBadge.className = 'spotlight-badge';
+    spotlightBadge.innerHTML = '⭐ Spotlight';
+    videoWrapper.appendChild(spotlightBadge);
+  }
+  
+  // Add pin badge (for current user's pinned participant)
+  if (pinnedParticipant === participant.socketId) {
+    const pinBadge = document.createElement('div');
+    pinBadge.className = 'pin-badge';
+    pinBadge.innerHTML = '📌 Pinned';
+    videoWrapper.appendChild(pinBadge);
+  }
+  
+  // Add hand raised indicator
+  if (participant.handRaised) {
+    const handIndicator = document.createElement('div');
+    handIndicator.className = 'hand-raised-indicator';
+    handIndicator.innerHTML = '✋ Hand Raised';
+    videoWrapper.appendChild(handIndicator);
+  }
+  
+  // Add audio indicator (muted)
+  if (participant.isMuted) {
+    const audioIndicator = document.createElement('div');
+    audioIndicator.className = 'audio-indicator';
+    audioIndicator.innerHTML = '🔇';
+    videoWrapper.appendChild(audioIndicator);
+  }
+  
+  // Add screen share label
+  if (participant.isScreenSharing) {
+    const screenLabel = document.createElement('div');
+    screenLabel.className = 'video-label';
+    screenLabel.innerHTML = '🖥️ Screen Share';
+    videoWrapper.appendChild(screenLabel);
+    videoWrapper.classList.add('screen-share');
+  } else {
+    videoWrapper.classList.remove('screen-share');
+  }
+}
 
-            microphone.connect(analyser);
-            analyser.fftSize = 256;
+function renderVideoGrid() {
+  if (!secondaryVideosSection) return;
+  
+  const participantArray = Array.from(participants.values());
+  const totalParticipants = participantArray.length;
+  
+  // Update grid pagination
+  totalGridPages = Math.ceil(totalParticipants / participantsPerPage);
+  currentGridPage = Math.min(currentGridPage, totalGridPages - 1);
+  
+  if (currentView === 'sidebar') {
+    renderSidebarView(participantArray);
+  } else {
+    renderGridView(participantArray);
+  }
+  
+  updateGridNavigation();
+}
 
-            const checkAudioLevel = () => {
-              if (this.audioContext.state === 'suspended') {
-                this.audioContext.resume();
-              }
-              
-              analyser.getByteFrequencyData(dataArray);
-              const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
-              const normalizedLevel = average / 255;
-
-              // Send audio level to server for auto-spotlight
-              this.socket.emit('audio-level', { level: normalizedLevel });
-
-              requestAnimationFrame(checkAudioLevel);
-            };
-
-            checkAudioLevel();
-          } catch (error) {
-            console.error('Error setting up audio monitoring:', error);
-          }
-        }
-
-        async createPeerConnection(remoteSocketId, shouldCreateOffer) {
-          try {
-            console.log(`Creating peer connection with ${remoteSocketId}, shouldCreateOffer: ${shouldCreateOffer}`);
-            
-            // Close existing connection if it exists
-            if (this.peerConnections.has(remoteSocketId)) {
-              this.peerConnections.get(remoteSocketId).close();
-              this.peerConnections.delete(remoteSocketId);
-            }
-
-            const peerConnection = new RTCPeerConnection(this.configuration);
-            this.peerConnections.set(remoteSocketId, peerConnection);
-
-            // Add local stream tracks
-            if (this.localStream) {
-              this.localStream.getTracks().forEach(track => {
-                peerConnection.addTrack(track, this.localStream);
-              });
-            }
-
-            // Handle remote stream
-            peerConnection.ontrack = (event) => {
-              console.log('Received remote track from:', remoteSocketId);
-              const [remoteStream] = event.streams;
-              this.remoteStreams.set(remoteSocketId, remoteStream);
-              this.updateRemoteVideo(remoteSocketId, remoteStream);
-            };
-
-            // Handle ICE candidates
-            peerConnection.onicecandidate = (event) => {
-              if (event.candidate) {
-                this.socket.emit('ice-candidate', {
-                  target: remoteSocketId,
-                  candidate: event.candidate
-                });
-              }
-            };
-
-            // Handle connection state changes
-            peerConnection.onconnectionstatechange = () => {
-              console.log(`Connection state with ${remoteSocketId}:`, peerConnection.connectionState);
-              if (peerConnection.connectionState === 'failed') {
-                console.log(`Connection failed with ${remoteSocketId}, attempting restart`);
-                peerConnection.restartIce();
-              }
-            };
-
-            // Create and send offer if we should
-            if (shouldCreateOffer) {
-              const offer = await peerConnection.createOffer({
-                offerToReceiveAudio: true,
-                offerToReceiveVideo: true
-              });
-              await peerConnection.setLocalDescription(offer);
-              
-              this.socket.emit('offer', {
-                target: remoteSocketId,
-                offer: offer
-              });
-            }
-          } catch (error) {
-            console.error('Error creating peer connection:', error);
-          }
-        }
-
-        async handleOffer(data) {
-          const { offer, sender } = data;
-          console.log(`Handling offer from ${sender}`);
-          
-          try {
-            let peerConnection = this.peerConnections.get(sender);
-            
-            if (!peerConnection) {
-              peerConnection = new RTCPeerConnection(this.configuration);
-              this.peerConnections.set(sender, peerConnection);
-
-              // Add local stream tracks
-              if (this.localStream) {
-                this.localStream.getTracks().forEach(track => {
-                  peerConnection.addTrack(track, this.localStream);
-                });
-              }
-
-              // Handle remote stream
-              peerConnection.ontrack = (event) => {
-                console.log('Received remote track from:', sender);
-                const [remoteStream] = event.streams;
-                this.remoteStreams.set(sender, remoteStream);
-                this.updateRemoteVideo(sender, remoteStream);
-              };
-
-              // Handle ICE candidates
-              peerConnection.onicecandidate = (event) => {
-                if (event.candidate) {
-                  this.socket.emit('ice-candidate', {
-                    target: sender,
-                    candidate: event.candidate
-                  });
-                }
-              };
-
-              // Handle connection state changes
-              peerConnection.onconnectionstatechange = () => {
-                console.log(`Connection state with ${sender}:`, peerConnection.connectionState);
-                if (peerConnection.connectionState === 'failed') {
-                  console.log(`Connection failed with ${sender}, attempting restart`);
-                  peerConnection.restartIce();
-                }
-              };
-            }
-
-            // Set remote description and create answer
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-            const answer = await peerConnection.createAnswer();
-            await peerConnection.setLocalDescription(answer);
-            
-            this.socket.emit('answer', {
-              target: sender,
-              answer: answer
-            });
-          } catch (error) {
-            console.error('Error handling offer:', error);
-          }
-        }
-
-        async handleAnswer(data) {
-          const { answer, sender } = data;
-          console.log(`Handling answer from ${sender}`);
-          
-          const peerConnection = this.peerConnections.get(sender);
-          
-          if (peerConnection && peerConnection.signalingState === 'have-local-offer') {
-            try {
-              await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
-            } catch (error) {
-              console.error('Error handling answer:', error);
-            }
-          }
-        }
-
-        async handleIceCandidate(data) {
-          const { candidate, sender } = data;
-          const peerConnection = this.peerConnections.get(sender);
-          
-          if (peerConnection && peerConnection.remoteDescription) {
-            try {
-              await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-            } catch (error) {
-              console.error('Error handling ICE candidate:', error);
-            }
-          }
-        }
-
-        updateRemoteVideo(socketId, stream) {
-          // Wait a bit for the DOM to be ready
-          setTimeout(() => {
-            const videoWrapper = document.querySelector(`[data-socket-id="${socketId}"]`);
-            if (videoWrapper) {
-              const video = videoWrapper.querySelector('.video-frame');
-              if (video && video.srcObject !== stream) {
-                video.srcObject = stream;
-                video.play().catch(e => console.error('Error playing video:', e));
-              }
-            }
-          }, 100);
-        }
-
-        getRemoteStream(socketId) {
-          return this.remoteStreams.get(socketId);
-        }
-
-        removePeerConnection(socketId) {
-          const peerConnection = this.peerConnections.get(socketId);
-          if (peerConnection) {
-            peerConnection.close();
-            this.peerConnections.delete(socketId);
-          }
-          this.remoteStreams.delete(socketId);
-        }
-
-        async toggleAudio(enabled) {
-          if (this.localStream) {
-            const audioTrack = this.localStream.getAudioTracks()[0];
-            if (audioTrack) {
-              audioTrack.enabled = enabled;
-            }
-          }
-        }
-
-        async toggleVideo(enabled) {
-          if (this.localStream) {
-            const videoTrack = this.localStream.getVideoTracks()[0];
-            if (videoTrack) {
-              videoTrack.enabled = enabled;
-            }
-          }
-        }
-
-        async startScreenShare() {
-          try {
-            console.log('Starting screen share with audio...');
-            
-            // Request screen share with enhanced audio options
-            this.screenStream = await navigator.mediaDevices.getDisplayMedia({
-              video: { 
-                cursor: 'always',
-                displaySurface: 'monitor',
-                width: { ideal: 1920 },
-                height: { ideal: 1080 },
-                frameRate: { ideal: 30 }
-              },
-              audio: {
-                echoCancellation: false,
-                noiseSuppression: false,
-                autoGainControl: false,
-                suppressLocalAudioPlayback: false,
-                sampleRate: 48000,
-                channelCount: 2
-              }
-            });
-
-            console.log('Screen stream obtained:', this.screenStream);
-            console.log('Video tracks:', this.screenStream.getVideoTracks().length);
-            console.log('Audio tracks:', this.screenStream.getAudioTracks().length);
-
-            // Get tracks from screen stream
-            const screenVideoTrack = this.screenStream.getVideoTracks()[0];
-            const screenAudioTracks = this.screenStream.getAudioTracks();
-
-            // Replace video track in all peer connections
-            for (const [socketId, peerConnection] of this.peerConnections) {
-              const videoSender = peerConnection.getSenders().find(s => 
-                s.track && s.track.kind === 'video'
-              );
-              
-              if (videoSender && screenVideoTrack) {
-                console.log(`Replacing video track for peer ${socketId}`);
-                await videoSender.replaceTrack(screenVideoTrack);
-              }
-            }
-
-            // Handle screen share audio
-            if (screenAudioTracks.length > 0) {
-              console.log('System audio detected, replacing audio tracks...');
-              
-              // Create a new MediaStream that combines microphone and system audio
-              const combinedAudioStream = await this.createCombinedAudioStream(screenAudioTracks[0]);
-              
-              if (combinedAudioStream) {
-                const combinedAudioTrack = combinedAudioStream.getAudioTracks()[0];
-                
-                // Replace audio track in all peer connections
-                for (const [socketId, peerConnection] of this.peerConnections) {
-                  const audioSender = peerConnection.getSenders().find(s => 
-                    s.track && s.track.kind === 'audio'
-                  );
-                  
-                  if (audioSender && combinedAudioTrack) {
-                    console.log(`Replacing audio track for peer ${socketId} with combined audio`);
-                    await audioSender.replaceTrack(combinedAudioTrack);
-                  } else if (!audioSender && combinedAudioTrack) {
-                    console.log(`Adding combined audio track for peer ${socketId}`);
-                    peerConnection.addTrack(combinedAudioTrack, combinedAudioStream);
-                  }
-                }
-              } else {
-                // Fallback: just use system audio
-                const systemAudioTrack = screenAudioTracks[0];
-                
-                for (const [socketId, peerConnection] of this.peerConnections) {
-                  const audioSender = peerConnection.getSenders().find(s => 
-                    s.track && s.track.kind === 'audio'
-                  );
-                  
-                  if (audioSender) {
-                    console.log(`Replacing audio track for peer ${socketId} with system audio only`);
-                    await audioSender.replaceTrack(systemAudioTrack);
-                  } else {
-                    console.log(`Adding system audio track for peer ${socketId}`);
-                    peerConnection.addTrack(systemAudioTrack, this.screenStream);
-                  }
-                }
-              }
-            } else {
-              console.log('No system audio available for screen share');
-              // Keep using microphone audio
-            }
-
-            // Update local video to show screen share
-            const localVideo = document.querySelector(`[data-socket-id="${this.socket.id}"] .video-frame`);
-            if (localVideo) {
-              localVideo.srcObject = this.screenStream;
-            }
-
-            // Add screen share label
-            const localWrapper = document.querySelector(`[data-socket-id="${this.socket.id}"]`);
-            if (localWrapper) {
-              let label = localWrapper.querySelector('.video-label');
-              if (!label) {
-                label = document.createElement('div');
-                label.className = 'video-label';
-                localWrapper.appendChild(label);
-              }
-              label.innerHTML = '<i class="fas fa-desktop"></i> Screen Share' + 
-                (screenAudioTracks.length > 0 ? ' (with audio)' : '');
-            }
-
-            // Handle screen share end
-            screenVideoTrack.onended = () => {
-              console.log('Screen share ended');
-              this.stopScreenShare();
-            };
-
-            // Handle audio track end if present
-            if (screenAudioTracks.length > 0) {
-              screenAudioTracks[0].onended = () => {
-                console.log('Screen share audio ended');
-              };
-            }
-
-            this.isScreenSharing = true;
-            console.log('Screen share started successfully');
-            
-          } catch (error) {
-            console.error('Error starting screen share:', error);
-            throw error;
-          }
-        }
-
-        async createCombinedAudioStream(systemAudioTrack) {
-          try {
-            if (!this.audioContext) {
-              this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            }
-
-            // Resume audio context if suspended
-            if (this.audioContext.state === 'suspended') {
-              await this.audioContext.resume();
-            }
-
-            // Create audio sources
-            const systemAudioSource = this.audioContext.createMediaStreamSource(
-              new MediaStream([systemAudioTrack])
-            );
-            
-            let microphoneSource = null;
-            if (this.originalMicrophoneTrack && this.originalMicrophoneTrack.enabled) {
-              microphoneSource = this.audioContext.createMediaStreamSource(
-                new MediaStream([this.originalMicrophoneTrack])
-              );
-            }
-
-            // Create gain nodes for volume control
-            const systemGain = this.audioContext.createGain();
-            const micGain = this.audioContext.createGain();
-            const outputGain = this.audioContext.createGain();
-
-            // Set gain levels
-            systemGain.gain.value = 1.0; // Full system audio
-            micGain.gain.value = 0.7;    // Slightly reduced microphone
-            outputGain.gain.value = 1.0;
-
-            // Create destination for combined audio
-            const destination = this.audioContext.createMediaStreamDestination();
-
-            // Connect audio graph
-            systemAudioSource.connect(systemGain);
-            systemGain.connect(outputGain);
-
-            if (microphoneSource) {
-              microphoneSource.connect(micGain);
-              micGain.connect(outputGain);
-            }
-
-            outputGain.connect(destination);
-
-            console.log('Combined audio stream created successfully');
-            return destination.stream;
-
-          } catch (error) {
-            console.error('Error creating combined audio stream:', error);
-            return null;
-          }
-        }
-
-        async stopScreenShare() {
-          console.log('Stopping screen share...');
-          
-          if (this.screenStream) {
-            this.screenStream.getTracks().forEach(track => {
-              console.log(`Stopping track: ${track.kind}`);
-              track.stop();
-            });
-            this.screenStream = null;
-          }
-
-          // Replace back to camera video and microphone audio
-          if (this.localStream) {
-            const videoTrack = this.localStream.getVideoTracks()[0];
-            const audioTrack = this.originalMicrophoneTrack || this.localStream.getAudioTracks()[0];
-            
-            for (const [socketId, peerConnection] of this.peerConnections) {
-              // Replace video track back to camera
-              const videoSender = peerConnection.getSenders().find(s => 
-                s.track && s.track.kind === 'video'
-              );
-              
-              if (videoSender && videoTrack) {
-                console.log(`Restoring camera video for peer ${socketId}`);
-                await videoSender.replaceTrack(videoTrack);
-              }
-
-              // Replace audio track back to microphone
-              const audioSender = peerConnection.getSenders().find(s => 
-                s.track && s.track.kind === 'audio'
-              );
-              
-              if (audioSender && audioTrack) {
-                console.log(`Restoring microphone audio for peer ${socketId}`);
-                await audioSender.replaceTrack(audioTrack);
-              }
-            }
-
-            // Update local video back to camera
-            const localVideo = document.querySelector(`[data-socket-id="${this.socket.id}"] .video-frame`);
-            if (localVideo) {
-              localVideo.srcObject = this.localStream;
-            }
-
-            // Remove screen share label
-            const localWrapper = document.querySelector(`[data-socket-id="${this.socket.id}"]`);
-            if (localWrapper) {
-              const label = localWrapper.querySelector('.video-label');
-              if (label) {
-                label.remove();
-              }
-            }
-          }
-
-          this.isScreenSharing = false;
-          console.log('Screen share stopped successfully');
+function renderSidebarView(participantArray) {
+  // Clear existing videos
+  mainVideoSection.innerHTML = '';
+  secondaryVideosSection.innerHTML = '';
+  
+  // Find main video (spotlighted, pinned, or first participant)
+  let mainParticipant = null;
+  
+  if (pinnedParticipant) {
+    mainParticipant = participants.get(pinnedParticipant);
+  } else if (spotlightedParticipant) {
+    mainParticipant = participants.get(spotlightedParticipant);
+  } else if (participantArray.length > 0) {
+    mainParticipant = participantArray[0];
+  }
+  
+  // Render main video
+  if (mainParticipant) {
+    let mainVideoWrapper = document.getElementById(`video-${mainParticipant.socketId}`);
+    if (!mainVideoWrapper) {
+      mainVideoWrapper = createVideoWrapper(mainParticipant.socketId);
+    }
+    
+    if (mainVideoWrapper) {
+      mainVideoWrapper.classList.add('main-video');
+      mainVideoSection.appendChild(mainVideoWrapper);
+      
+      // Update local stream for own video
+      if (mainParticipant.socketId === socket.id && localStream) {
+        const videoElement = mainVideoWrapper.querySelector('.video-frame');
+        if (videoElement) {
+          videoElement.srcObject = localStream;
         }
       }
-
-      class ParticipantMeeting {
-        constructor() {
-          this.socket = io();
-          this.meetingId = window.location.pathname.split('/').pop();
-          this.userName = '';
-          this.isHost = false;
-          this.isCoHost = false;
-          this.participants = new Map();
-          this.currentView = 'sidebar';
-          this.spotlightedParticipant = null;
-          this.pinnedParticipant = null;
-          this.webrtc = new WebRTCManager(this.socket);
-          this.participantsPanelOpen = false;
-          this.searchTerm = '';
-          this.reactionManager = null;
-          
-          // Grid pagination properties
-          this.currentSet = 0;
-          this.videosPerSet = 15;
-          this.totalSets = 0;
-          
-          this.init().then(() => {
-            // Store global references after initialization
-            window.hostMeetingInstance = this;
-            window.myName = this.userName;
-            console.log('Host meeting initialized. Host name:', window.myName);
-          });
-        }
-
-        async init() {
-          await this.getUserName();
-          this.setupSocketListeners();
-          this.setupEventListeners();
-          this.updateTime();
-          this.joinMeeting();
-          
-          // Initialize WebRTC and show local video immediately
-          const initialized = await this.webrtc.initialize();
-          if (initialized) {
-            this.showLocalVideo();
-            // Set ready after a short delay to ensure everything is set up
-            setTimeout(() => {
-              this.webrtc.setReady();
-            }, 1000);
-          }
-
-          // Initialize Reaction Manager
-          this.reactionManager = new ReactionManager(this.socket);
-        }
-
-        showLocalVideo() {
-          // Create local video immediately
-          this.participants.set(this.socket.id, {
-            socketId: this.socket.id,
-            name: this.userName,
-            isHost: false,
-            isCoHost: false,
-            isMuted: false,
-            isCameraOff: false,
-            isSpotlighted: false,
-            isScreenSharing: false,
-            handRaised: false
-          });
-          this.renderParticipants();
-          this.renderParticipantsList();
-        }
-
-        async getUserName() {
-          try {
-            const response = await fetch('/api/user');
-            const data = await response.json();
-            if (data.user) {
-              this.userName = data.user.name;
-            } else {
-              window.location.href = '/login';
-            }
-          } catch (error) {
-            console.error('Error fetching user data:', error);
-            window.location.href = '/login';
-          }
-        }
-
-        setupSocketListeners() {
-          this.socket.on('joined-meeting', (data) => {
-            console.log('Joined meeting as participant:', data);
-            this.updateParticipants(data.participants);
-            this.spotlightedParticipant = data.spotlightedParticipant;
-            this.updateMeetingTitle();
-            this.updateRaisedHands(data.raisedHands);
-          });
-
-          this.socket.on('participant-joined', (data) => {
-            console.log('Participant joined:', data);
-            this.updateParticipants(data.participants);
-            this.showToast(`${data.participant.name} joined the meeting`);
-          });
-
-          this.socket.on('participant-left', (data) => {
-            console.log('Participant left:', data);
-            this.removeParticipantVideo(data.socketId);
-            this.updateParticipants(data.participants);
-            this.showToast(`${data.participantName} left the meeting`);
-            
-            // Clean up WebRTC connection
-            this.webrtc.removePeerConnection(data.socketId);
-          });
-
-          this.socket.on('participant-spotlighted', (data) => {
-            console.log('Participant spotlighted:', data);
-            this.handleSpotlightChange(data.spotlightedParticipant);
-            this.updateParticipants(data.participants);
-          });
-
-          this.socket.on('spotlight-removed', (data) => {
-            console.log('Spotlight removed:', data);
-            this.handleSpotlightRemoved();
-            this.updateParticipants(data.participants);
-          });
-
-          this.socket.on('participant-pinned', (data) => {
-            console.log('Participant pinned:', data);
-            this.handlePinChange(data.pinnedParticipant);
-          });
-
-          this.socket.on('force-mute', (data) => {
-            console.log('Force muted:', data);
-            this.handleForceMute(data.isMuted);
-          });
-
-          this.socket.on('made-cohost', () => {
-            console.log('Made co-host');
-            this.isCoHost = true;
-            this.showToast('You are now a co-host!');
-            this.renderParticipants();
-            this.renderParticipantsList();
-          });
-
-          this.socket.on('kicked-from-meeting', () => {
-            console.log('Kicked from meeting');
-            document.getElementById('kickedModal').style.display = 'flex';
-          });
-
-          this.socket.on('meeting-ended', () => {
-            console.log('Meeting ended');
-            document.getElementById('meetingEndedModal').style.display = 'flex';
-          });
-
-          this.socket.on('participant-muted', (data) => {
-            console.log('Participant muted:', data);
-            this.updateParticipantAudio(data.targetSocketId, data.isMuted);
-            this.updateParticipants(data.participants);
-          });
-
-          this.socket.on('meeting-error', (data) => {
-            console.error('Meeting error:', data);
-            this.showToast(data.message, 'error');
-            setTimeout(() => {
-              window.location.href = '/dashboard';
-            }, 3000);
-          });
-
-          this.socket.on('action-error', (data) => {
-            console.error('Action error:', data);
-            this.showToast(data.message, 'error');
-          });
-
-          // Hand raised events
-          this.socket.on('hand-raised', (data) => {
-            this.updateRaisedHands(data.raisedHands);
-            if (this.reactionManager) {
-              this.reactionManager.updateHandRaised(data.socketId, data.participantName, true);
-            }
-          });
-
-          this.socket.on('hand-lowered', (data) => {
-            this.updateRaisedHands(data.raisedHands);
-            if (this.reactionManager) {
-              this.reactionManager.updateHandRaised(data.socketId, data.participantName, false);
-            }
-          });
-        }
-
-        setupEventListeners() {
-          // Participants panel toggle
-          document.getElementById('memberToggleBtn').addEventListener('click', () => {
-            this.toggleParticipantsPanel();
-          });
-
-          document.getElementById('closeParticipants').addEventListener('click', () => {
-            this.closeParticipantsPanel();
-          });
-
-          // Search functionality
-          document.getElementById('participantSearch').addEventListener('input', (e) => {
-            this.searchTerm = e.target.value.toLowerCase();
-            this.renderParticipantsList();
-          });
-
-          // View toggle
-          document.getElementById('viewToggle').addEventListener('click', () => {
-            this.toggleView();
-          });
-
-          // Mic toggle
-          document.getElementById('micBtn').addEventListener('click', (e) => {
-            this.toggleMic(e.currentTarget);
-          });
-
-          // Camera toggle
-          document.getElementById('cameraBtn').addEventListener('click', (e) => {
-            this.toggleCamera(e.currentTarget);
-          });
-
-          // Screen share toggle
-          document.getElementById('screenShareBtn').addEventListener('click', (e) => {
-            this.toggleScreenShare(e.currentTarget);
-          });
-
-          // Leave call
-          document.getElementById('leaveCallBtn').addEventListener('click', () => {
-            this.leaveMeeting();
-          });
-
-          // Close participants panel when clicking outside
-          document.addEventListener('click', (e) => {
-            if (this.participantsPanelOpen && 
-                !document.getElementById('participantsPanel').contains(e.target) &&
-                !document.getElementById('memberToggleBtn').contains(e.target)) {
-              this.closeParticipantsPanel();
-            }
-          });
-        }
-
-        updateRaisedHands(raisedHands) {
-          if (this.reactionManager) {
-            this.reactionManager.raisedHands.clear();
-            raisedHands.forEach(socketId => {
-              this.reactionManager.raisedHands.add(socketId);
-            });
-            this.reactionManager.updateParticipantsDisplay();
-          }
-        }
-
-        toggleParticipantsPanel() {
-          if (this.participantsPanelOpen) {
-            this.closeParticipantsPanel();
-          } else {
-            this.openParticipantsPanel();
-          }
-        }
-
-        openParticipantsPanel() {
-          this.participantsPanelOpen = true;
-          document.getElementById('participantsPanel').classList.add('open');
-          document.getElementById('videoContainer').classList.add('participants-open');
-          this.renderParticipantsList();
-        }
-
-        closeParticipantsPanel() {
-          this.participantsPanelOpen = false;
-          document.getElementById('participantsPanel').classList.remove('open');
-          document.getElementById('videoContainer').classList.remove('participants-open');
-        }
-
-        renderParticipantsList() {
-          const participantsList = document.getElementById('participantsList');
-          const participantsPanelCount = document.getElementById('participantsPanelCount');
-          
-          participantsList.innerHTML = '';
-          
-          const filteredParticipants = Array.from(this.participants.values()).filter(participant => 
-            participant.name.toLowerCase().includes(this.searchTerm)
-          );
-
-          participantsPanelCount.textContent = filteredParticipants.length;
-
-          filteredParticipants.forEach(participant => {
-            const participantItem = this.createParticipantItem(participant);
-            participantsList.appendChild(participantItem);
-          });
-
-          // Update reaction manager if available
-          if (this.reactionManager) {
-            this.reactionManager.onParticipantsUpdated();
-          }
-        }
-
-        createParticipantItem(participant) {
-          const item = document.createElement('div');
-          item.className = 'participant-item';
-          item.dataset.socketId = participant.socketId;
-
-          const initials = participant.name.split(' ').map(n => n[0]).join('').toUpperCase();
-          
-          let roleText = 'Participant';
-          let roleClass = 'participant';
-          if (participant.isHost) {
-            roleText = 'Host';
-            roleClass = 'host';
-          } else if (participant.isCoHost) {
-            roleText = 'Co-Host';
-            roleClass = 'cohost';
-          }
-
-          const statusIcons = [];
-          if (participant.isMuted) {
-            statusIcons.push('<div class="status-icon muted"><i class="fas fa-microphone-slash"></i></div>');
-          }
-          if (participant.isCameraOff) {
-            statusIcons.push('<div class="status-icon camera-off"><i class="fas fa-video-slash"></i></div>');
-          }
-
-          const dropdownOptions = this.getParticipantDropdownOptions(participant);
-
-          item.innerHTML = `
-            <div class="participant-avatar">${initials}</div>
-            <div class="participant-info">
-              <div class="participant-name">${participant.name}</div>
-              <div class="participant-role">
-                <span class="role-badge ${roleClass}">${roleText}</span>
-                ${participant.isSpotlighted ? '<i class="fas fa-star" style="color: #fbbf24; margin-left: 4px;"></i>' : ''}
-                ${this.pinnedParticipant === participant.socketId ? '<i class="fas fa-thumbtack" style="color: #10b981; margin-left: 4px;"></i>' : ''}
-              </div>
-            </div>
-            <div class="participant-status">
-              ${statusIcons.join('')}
-            </div>
-            <div class="participant-actions">
-              <button class="participant-menu-btn" data-participant-id="${participant.socketId}">
-                <i class="fas fa-ellipsis-v"></i>
-              </button>
-              <div class="participant-dropdown" id="dropdown-${participant.socketId}">
-                ${dropdownOptions}
-              </div>
-            </div>
-          `;
-
-          // Bind events
-          const menuBtn = item.querySelector('.participant-menu-btn');
-          const dropdown = item.querySelector('.participant-dropdown');
-
-          menuBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            // Close all other dropdowns
-            document.querySelectorAll('.participant-dropdown').forEach(d => {
-              if (d !== dropdown) d.classList.remove('show');
-            });
-            dropdown.classList.toggle('show');
-          });
-
-          // Bind dropdown actions
-          const dropdownButtons = dropdown.querySelectorAll('button');
-          dropdownButtons.forEach(button => {
-            button.addEventListener('click', (e) => {
-              e.stopPropagation();
-              const action = button.dataset.action;
-              this.handleParticipantAction(action, participant.socketId);
-              dropdown.classList.remove('show');
-            });
-          });
-
-          return item;
-        }
-
-        getParticipantDropdownOptions(participant) {
-          let options = [];
-          
-          // Pin option (available to all participants)
-          if (this.pinnedParticipant === participant.socketId) {
-            options.push('<button data-action="unpin"><i class="fas fa-thumbtack"></i> Unpin</button>');
-          } else {
-            options.push('<button data-action="pin"><i class="fas fa-thumbtack"></i> Pin</button>');
-          }
-          
-          // Co-host and host actions
-          if (this.isCoHost && !participant.isHost) {
-            if (participant.isSpotlighted) {
-              options.push('<button data-action="remove-spotlight"><i class="fas fa-star-half-alt"></i> Remove Spotlight</button>');
-            } else {
-              options.push('<button data-action="spotlight"><i class="fas fa-star"></i> Spotlight</button>');
-            }
-            
-            options.push(`<button data-action="mute"><i class="fas fa-microphone-slash"></i> ${participant.isMuted ? 'Unmute' : 'Mute'}</button>`);
-          }
-          
-          return options.join('');
-        }
-
-        joinMeeting() {
-          this.socket.emit('join-meeting', {
-            meetingId: this.meetingId,
-            participantName: this.userName
-          });
-        }
-
-        updateParticipants(participants) {
-          // Keep local participant if not in server list
-          const localParticipant = this.participants.get(this.socket.id);
-          
-          this.participants.clear();
-          participants.forEach(p => {
-            this.participants.set(p.socketId, p);
-            if (p.socketId === this.socket.id) {
-              this.isCoHost = p.isCoHost;
-            }
-          });
-
-          // Ensure local participant is always present
-          if (localParticipant && !this.participants.has(this.socket.id)) {
-            this.participants.set(this.socket.id, localParticipant);
-          }
-
-          this.renderParticipants();
-          this.updateParticipantCount();
-          if (this.participantsPanelOpen) {
-            this.renderParticipantsList();
-          }
-        }
-
-        calculateGridPagination() {
-          const totalParticipants = this.participants.size;
-          this.totalSets = Math.ceil(totalParticipants / this.videosPerSet);
-          
-          // Ensure current set is within bounds
-          if (this.currentSet >= this.totalSets) {
-            this.currentSet = Math.max(0, this.totalSets - 1);
-          }
-        }
-
-        getCurrentSetParticipants() {
-          const participantArray = Array.from(this.participants.values());
-          const startIndex = this.currentSet * this.videosPerSet;
-          const endIndex = startIndex + this.videosPerSet;
-          return participantArray.slice(startIndex, endIndex);
-        }
-
-        updateGridSizeClass() {
-          const videoContainer = document.getElementById('videoContainer');
-          const participantCount = this.participants.size;
-          
-          // Remove all existing size classes
-          videoContainer.classList.remove(
-            'participants-2', 'participants-3', 'participants-4', 
-            'participants-5', 'participants-6'
-          );
-          
-          // Add appropriate size class
-          if (participantCount === 2) {
-            videoContainer.classList.add('participants-2');
-          } else if (participantCount === 3) {
-            videoContainer.classList.add('participants-3');
-          } else if (participantCount === 4) {
-            videoContainer.classList.add('participants-4');
-          } else if (participantCount === 5) {
-            videoContainer.classList.add('participants-5');
-          } else if (participantCount === 6) {
-            videoContainer.classList.add('participants-6');
-          }
-          // For 7+ participants, no special class is added (uses default grid)
-        }
-
-        createGridNavigation() {
-          const videoContainer = document.getElementById('videoContainer');
-          let navigation = videoContainer.querySelector('.grid-navigation');
-          
-          if (!navigation) {
-            navigation = document.createElement('div');
-            navigation.className = 'grid-navigation';
-            videoContainer.appendChild(navigation);
-          }
-          
-          const startParticipant = this.currentSet * this.videosPerSet + 1;
-          const endParticipant = Math.min((this.currentSet + 1) * this.videosPerSet, this.participants.size);
-          
-          navigation.innerHTML = `
-            <button class="grid-nav-btn" id="prevSetBtn" ${this.currentSet === 0 ? 'disabled' : ''}>
-              <i class="fas fa-chevron-left"></i>
-              Previous
-            </button>
-            <div class="grid-nav-info">
-              ${startParticipant}-${endParticipant} of ${this.participants.size}
-            </div>
-            <button class="grid-nav-btn" id="nextSetBtn" ${this.currentSet >= this.totalSets - 1 ? 'disabled' : ''}>
-              Next
-              <i class="fas fa-chevron-right"></i>
-            </button>
-          `;
-          
-          // Bind navigation events
-          const prevBtn = navigation.querySelector('#prevSetBtn');
-          const nextBtn = navigation.querySelector('#nextSetBtn');
-          
-          prevBtn.addEventListener('click', () => {
-            if (this.currentSet > 0) {
-              this.currentSet--;
-              this.renderParticipants();
-            }
-          });
-          
-          nextBtn.addEventListener('click', () => {
-            if (this.currentSet < this.totalSets - 1) {
-              this.currentSet++;
-              this.renderParticipants();
-            }
-          });
-        }
-
-        renderParticipants() {
-          const mainVideoSection = document.getElementById('mainVideoSection');
-          const secondaryVideosSection = document.getElementById('secondaryVideosSection');
-          
-          // Clear existing videos
-          mainVideoSection.innerHTML = '';
-          secondaryVideosSection.innerHTML = '';
-
-          if (this.currentView === 'grid') {
-            this.calculateGridPagination();
-            this.updateGridSizeClass();
-            
-            // Get participants for current set
-            const currentSetParticipants = this.getCurrentSetParticipants();
-            
-            currentSetParticipants.forEach(participant => {
-              const videoWrapper = this.createVideoWrapper(participant);
-              secondaryVideosSection.appendChild(videoWrapper);
-            });
-            
-            // Create navigation if we have multiple sets
-            if (this.totalSets > 1) {
-              this.createGridNavigation();
-            }
-          } else {
-            // Sidebar view - show all participants
-            const participantArray = Array.from(this.participants.values());
-            
-            participantArray.forEach(participant => {
-              const videoWrapper = this.createVideoWrapper(participant);
-              
-              // Check if this participant should be in main view
-              const shouldBeMain = (this.spotlightedParticipant === participant.socketId || 
-                                   this.pinnedParticipant === participant.socketId);
-              
-              if (shouldBeMain) {
-                videoWrapper.classList.add('main-video');
-                videoWrapper.setAttribute('data-main-video', 'true');
-                mainVideoSection.appendChild(videoWrapper);
-              } else {
-                secondaryVideosSection.appendChild(videoWrapper);
-              }
-            });
-          }
-        }
-
-        createVideoWrapper(participant) {
-          const wrapper = document.createElement('div');
-          wrapper.className = 'video-wrapper';
-          wrapper.dataset.socketId = participant.socketId;
-          
-          if (participant.isSpotlighted || this.pinnedParticipant === participant.socketId) {
-            wrapper.setAttribute('data-main-video', 'true');
-          }
-
-          const dropdownOptions = this.getDropdownOptions(participant);
-          
-          wrapper.innerHTML = `
-            <video class="video-frame" autoplay playsinline ${participant.socketId === this.socket.id ? 'muted' : ''}></video>
-            <div class="video-controls">
-              <button class="menu-dots">⋮</button>
-              <div class="dropdown-menu">
-                ${dropdownOptions}
-              </div>
-            </div>
-            <div class="participant-name">${participant.name}${participant.isHost ? ' (Host)' : ''}${participant.isCoHost ? ' (Co-Host)'  : ''}</div>
-            ${participant.isSpotlighted ? '<div class="spotlight-badge"><i class="fas fa-star"></i></div>' : ''}
-            ${this.pinnedParticipant === participant.socketId ? '<div class="pin-badge"><i class="fas fa-thumbtack"></i></div>' : ''}
-            ${participant.isMuted ? '<div class="audio-indicator"><i class="fas fa-microphone-slash"></i></div>' : ''}
-          `;
-
-          this.bindVideoWrapperEvents(wrapper, participant);
-          
-          // Attach video stream
-          setTimeout(() => {
-            const video = wrapper.querySelector('.video-frame');
-            if (participant.socketId === this.socket.id) {
-              // Local video
-              if (this.webrtc.isScreenSharing && this.webrtc.screenStream) {
-                video.srcObject = this.webrtc.screenStream;
-              } else if (this.webrtc.localStream) {
-                video.srcObject = this.webrtc.localStream;
-              }
-              video.play().catch(e => console.error('Error playing local video:', e));
-            } else {
-              // Remote video
-              const remoteStream = this.webrtc.getRemoteStream(participant.socketId);
-              if (remoteStream) {
-                video.srcObject = remoteStream;
-                video.play().catch(e => console.error('Error playing remote video:', e));
-              }
-            }
-          }, 100);
-          
-          return wrapper;
-        }
-
-        getDropdownOptions(participant) {
-          let options = [];
-          
-          // Pin option (available to all participants)
-          if (this.pinnedParticipant === participant.socketId) {
-            options.push('<button data-action="unpin">Unpin</button>');
-          } else {
-            options.push('<button data-action="pin">Pin</button>');
-          }
-          
-          // Co-host and host actions
-          if (this.isCoHost && !participant.isHost) {
-            if (participant.isSpotlighted) {
-              options.push('<button data-action="remove-spotlight">Remove Spotlight</button>');
-            } else {
-              options.push('<button data-action="spotlight">Spotlight</button>');
-            }
-            
-            options.push(`<button data-action="mute">${participant.isMuted ? 'Unmute' : 'Mute'} Participant</button>`);
-          }
-          
-          return options.join('');
-        }
-
-        bindVideoWrapperEvents(wrapper, participant) {
-          // Double click to pin
-          wrapper.addEventListener('dblclick', () => {
-            this.pinParticipant(participant.socketId);
-          });
-
-          // Dropdown menu actions
-          const dropdownButtons = wrapper.querySelectorAll('.dropdown-menu button');
-          dropdownButtons.forEach(button => {
-            button.addEventListener('click', (e) => {
-              e.stopPropagation();
-              const action = button.dataset.action;
-              this.handleParticipantAction(action, participant.socketId);
-            });
-          });
-        }
-
-        handleParticipantAction(action, socketId) {
-          switch(action) {
-            case 'pin':
-              this.pinParticipant(socketId);
-              break;
-            case 'unpin':
-              this.unpinParticipant();
-              break;
-            case 'spotlight':
-              this.spotlightParticipant(socketId);
-              break;
-            case 'remove-spotlight':
-              this.removeSpotlight();
-              break;
-            case 'mute':
-              this.muteParticipant(socketId);
-              break;
-          }
-        }
-
-        pinParticipant(socketId) {
-          this.pinnedParticipant = socketId;
-          this.socket.emit('pin-participant', { targetSocketId: socketId });
-          this.renderParticipants();
-          if (this.participantsPanelOpen) {
-            this.renderParticipantsList();
-          }
-          
-          const participant = this.participants.get(socketId);
-          this.showToast(`Pinned ${participant?.name || 'participant'}`);
-        }
-
-        unpinParticipant() {
-          this.pinnedParticipant = null;
-          this.renderParticipants();
-          if (this.participantsPanelOpen) {
-            this.renderParticipantsList();
-          }
-          this.showToast('Unpinned participant');
-        }
-
-        spotlightParticipant(socketId) {
-          this.socket.emit('spotlight-participant', { targetSocketId: socketId });
-        }
-
-        removeSpotlight() {
-          this.socket.emit('remove-spotlight');
-        }
-
-        muteParticipant(socketId) {
-          this.socket.emit('mute-participant', { targetSocketId: socketId });
-        }
-
-        handleSpotlightChange(spotlightedSocketId) {
-          this.spotlightedParticipant = spotlightedSocketId;
-          this.renderParticipants();
-          if (this.participantsPanelOpen) {
-            this.renderParticipantsList();
-          }
-        }
-
-        handleSpotlightRemoved() {
-          this.spotlightedParticipant = null;
-          this.renderParticipants();
-          if (this.participantsPanelOpen) {
-            this.renderParticipantsList();
-          }
-        }
-
-        handlePinChange(pinnedSocketId) {
-          this.pinnedParticipant = pinnedSocketId;
-          this.renderParticipants();
-          if (this.participantsPanelOpen) {
-            this.renderParticipantsList();
-          }
-        }
-
-        handleForceMute(isMuted) {
-          const micBtn = document.getElementById('micBtn');
-          micBtn.setAttribute('data-active', !isMuted);
-          
-          const icon = micBtn.querySelector('i');
-          icon.className = isMuted ? 'fas fa-microphone-slash' : 'fas fa-microphone';
-          
-          this.showToast(isMuted ? 'You have been muted by the host' : 'You have been unmuted by the host');
-        }
-
-        removeParticipantVideo(socketId) {
-          const wrapper = document.querySelector(`[data-socket-id="${socketId}"]`);
-          if (wrapper) {
-            wrapper.style.transition = 'all 0.3s ease';
-            wrapper.style.opacity = '0';
-            wrapper.style.transform = 'scale(0.8)';
-            setTimeout(() => wrapper.remove(), 300);
-          }
-        }
-
-        updateParticipantAudio(socketId, isMuted) {
-          const wrapper = document.querySelector(`[data-socket-id="${socketId}"]`);
-          if (wrapper) {
-            let audioIndicator = wrapper.querySelector('.audio-indicator');
-            if (isMuted && !audioIndicator) {
-              audioIndicator = document.createElement('div');
-              audioIndicator.className = 'audio-indicator';
-              audioIndicator.innerHTML = '<i class="fas fa-microphone-slash"></i>';
-              wrapper.appendChild(audioIndicator);
-            } else if (!isMuted && audioIndicator) {
-              audioIndicator.remove();
-            }
-          }
-        }
-
-        toggleView() {
-          const videoContainer = document.getElementById('videoContainer');
-          const viewToggleIcon = document.getElementById('viewToggleIcon');
-          const viewToggleText = document.getElementById('viewToggleText');
-          
-          if (this.currentView === 'sidebar') {
-            this.currentView = 'grid';
-            this.currentSet = 0; // Reset to first set when switching to grid
-            videoContainer.classList.remove('sidebar-view');
-            videoContainer.classList.add('grid-view');
-            viewToggleIcon.className = 'fas fa-columns';
-            viewToggleText.textContent = 'Sidebar View';
-          } else {
-            this.currentView = 'sidebar';
-            videoContainer.classList.remove('grid-view');
-            videoContainer.classList.add('sidebar-view');
-            viewToggleIcon.className = 'fas fa-th';
-            viewToggleText.textContent = 'Grid View';
-            
-            // Remove navigation when switching to sidebar
-            const navigation = videoContainer.querySelector('.grid-navigation');
-            if (navigation) {
-              navigation.remove();
-            }
-          }
-          
-          this.renderParticipants();
-        }
-
-        async toggleMic(button) {
-          const isActive = button.getAttribute('data-active') === 'true';
-          button.setAttribute('data-active', !isActive);
-          
-          const icon = button.querySelector('i');
-          icon.className = isActive ? 'fas fa-microphone-slash' : 'fas fa-microphone';
-          
-          await this.webrtc.toggleAudio(!isActive);
-          this.socket.emit('toggle-mic', { isMuted: isActive });
-        }
-
-        async toggleCamera(button) {
-          const isActive = button.getAttribute('data-active') === 'true';
-          button.setAttribute('data-active', !isActive);
-          
-          const icon = button.querySelector('i');
-          icon.className = isActive ? 'fas fa-video-slash' : 'fas fa-video';
-          
-          await this.webrtc.toggleVideo(!isActive);
-          this.socket.emit('toggle-camera', { isCameraOff: isActive });
-        }
-
-        async toggleScreenShare(button) {
-          const isActive = button.getAttribute('data-active') === 'true';
-          
-          if (isActive) {
-            await this.webrtc.stopScreenShare();
-            button.setAttribute('data-active', 'false');
-            this.socket.emit('stop-screen-share');
-          } else {
-            try {
-              await this.webrtc.startScreenShare();
-              button.setAttribute('data-active', 'true');
-              this.socket.emit('start-screen-share', { streamId: 'screen' });
-            } catch (error) {
-              console.error('Failed to start screen share:', error);
-              this.showToast('Failed to start screen sharing', 'error');
-            }
-          }
-        }
-
-        updateParticipantCount() {
-          const count = this.participants.size;
-          document.getElementById('participantCount').textContent = count;
-        }
-
-        updateMeetingTitle() {
-          document.getElementById('meetingTitle').textContent = `Meeting ${this.meetingId}`;
-        }
-
-        updateTime() {
-          const timeElement = document.getElementById('meetingTime');
-          const now = new Date();
-          const timeString = now.toLocaleTimeString('en-US', { 
-            hour: '2-digit', 
-            minute: '2-digit',
-            hour12: true 
-          });
-          timeElement.textContent = timeString;
-          
-          setTimeout(() => this.updateTime(), 60000);
-        }
-
-        showToast(message, type = 'success') {
-          const toast = document.createElement('div');
-          toast.className = `toast ${type === 'error' ? 'error' : type === 'info' ? 'info' : ''}`;
-          toast.textContent = message;
-          
-          document.body.appendChild(toast);
-          
-          setTimeout(() => toast.classList.add('show'), 100);
-          setTimeout(() => {
-            toast.classList.remove('show');
-            setTimeout(() => toast.remove(), 300);
-          }, 3000);
-        }
-
-        leaveMeeting() {
-          if (confirm('Are you sure you want to leave the meeting?')) {
-            this.socket.disconnect();
-            window.location.href = '/dashboard';
-          }
+    }
+  }
+  
+  // Render secondary videos with pagination
+  const startIndex = currentGridPage * participantsPerPage;
+  const endIndex = Math.min(startIndex + participantsPerPage, participantArray.length);
+  const secondaryParticipants = participantArray.slice(startIndex, endIndex)
+    .filter(p => p.socketId !== mainParticipant?.socketId);
+  
+  secondaryParticipants.forEach(participant => {
+    let videoWrapper = document.getElementById(`video-${participant.socketId}`);
+    if (!videoWrapper) {
+      videoWrapper = createVideoWrapper(participant.socketId);
+    }
+    
+    if (videoWrapper) {
+      videoWrapper.classList.remove('main-video');
+      secondaryVideosSection.appendChild(videoWrapper);
+      
+      // Update local stream for own video
+      if (participant.socketId === socket.id && localStream) {
+        const videoElement = videoWrapper.querySelector('.video-frame');
+        if (videoElement) {
+          videoElement.srcObject = localStream;
         }
       }
+    }
+  });
+}
 
-      // Close dropdowns when clicking outside
-      document.addEventListener('click', () => {
-        document.querySelectorAll('.participant-dropdown').forEach(dropdown => {
-          dropdown.classList.remove('show');
-        });
-      });
+function renderGridView(participantArray) {
+  // Clear existing videos
+  mainVideoSection.innerHTML = '';
+  secondaryVideosSection.innerHTML = '';
+  
+  // Calculate pagination for grid view
+  const startIndex = currentGridPage * participantsPerPage;
+  const endIndex = Math.min(startIndex + participantsPerPage, participantArray.length);
+  const visibleParticipants = participantArray.slice(startIndex, endIndex);
+  
+  // Update grid class based on participant count
+  const participantCount = visibleParticipants.length;
+  videoContainer.className = `video-container grid-view participants-${participantCount}`;
+  
+  // Determine if we should use custom layout (for 2-7 participants) or standard grid
+  if (participantCount <= 7) {
+    secondaryVideosSection.className = 'secondary-videos-section custom-layout';
+    renderCustomGridLayout(visibleParticipants);
+  } else {
+    secondaryVideosSection.className = 'secondary-videos-section standard-grid';
+    renderStandardGrid(visibleParticipants);
+  }
+}
 
-      // Initialize the participant meeting
-      document.addEventListener('DOMContentLoaded', () => {
-        new ParticipantMeeting();
+function renderCustomGridLayout(participants) {
+  secondaryVideosSection.innerHTML = '';
+  
+  const participantCount = participants.length;
+  
+  if (participantCount <= 1) {
+    // Single participant - center it
+    const gridRow = document.createElement('div');
+    gridRow.className = 'grid-row';
+    participants.forEach(participant => {
+      const videoWrapper = getOrCreateVideoWrapper(participant);
+      if (videoWrapper) {
+        gridRow.appendChild(videoWrapper);
+      }
+    });
+    secondaryVideosSection.appendChild(gridRow);
+    
+  } else if (participantCount === 2) {
+    // Two participants - side by side
+    const gridRow = document.createElement('div');
+    gridRow.className = 'grid-row';
+    participants.forEach(participant => {
+      const videoWrapper = getOrCreateVideoWrapper(participant);
+      if (videoWrapper) {
+        gridRow.appendChild(videoWrapper);
+      }
+    });
+    secondaryVideosSection.appendChild(gridRow);
+    
+  } else if (participantCount === 3) {
+    // Three participants - 2 in first row, 1 centered in second
+    const firstRow = document.createElement('div');
+    firstRow.className = 'grid-row';
+    
+    for (let i = 0; i < 2; i++) {
+      const videoWrapper = getOrCreateVideoWrapper(participants[i]);
+      if (videoWrapper) {
+        firstRow.appendChild(videoWrapper);
+      }
+    }
+    
+    const secondRow = document.createElement('div');
+    secondRow.className = 'grid-row';
+    const videoWrapper = getOrCreateVideoWrapper(participants[2]);
+    if (videoWrapper) {
+      secondRow.appendChild(videoWrapper);
+    }
+    
+    secondaryVideosSection.appendChild(firstRow);
+    secondaryVideosSection.appendChild(secondRow);
+    
+  } else if (participantCount === 4) {
+    // Four participants - 2x2 grid
+    const firstRow = document.createElement('div');
+    firstRow.className = 'grid-row';
+    
+    for (let i = 0; i < 2; i++) {
+      const videoWrapper = getOrCreateVideoWrapper(participants[i]);
+      if (videoWrapper) {
+        firstRow.appendChild(videoWrapper);
+      }
+    }
+    
+    const secondRow = document.createElement('div');
+    secondRow.className = 'grid-row';
+    
+    for (let i = 2; i < 4; i++) {
+      const videoWrapper = getOrCreateVideoWrapper(participants[i]);
+      if (videoWrapper) {
+        secondRow.appendChild(videoWrapper);
+      }
+    }
+    
+    secondaryVideosSection.appendChild(firstRow);
+    secondaryVideosSection.appendChild(secondRow);
+    
+  } else if (participantCount === 5) {
+    // Five participants - 3 in first row, 2 centered in second
+    const firstRow = document.createElement('div');
+    firstRow.className = 'grid-row';
+    
+    for (let i = 0; i < 3; i++) {
+      const videoWrapper = getOrCreateVideoWrapper(participants[i]);
+      if (videoWrapper) {
+        firstRow.appendChild(videoWrapper);
+      }
+    }
+    
+    const secondRow = document.createElement('div');
+    secondRow.className = 'grid-row';
+    
+    for (let i = 3; i < 5; i++) {
+      const videoWrapper = getOrCreateVideoWrapper(participants[i]);
+      if (videoWrapper) {
+        secondRow.appendChild(videoWrapper);
+      }
+    }
+    
+    secondaryVideosSection.appendChild(firstRow);
+    secondaryVideosSection.appendChild(secondRow);
+    
+  } else if (participantCount === 6) {
+    // Six participants - 3x2 grid
+    const firstRow = document.createElement('div');
+    firstRow.className = 'grid-row';
+    
+    for (let i = 0; i < 3; i++) {
+      const videoWrapper = getOrCreateVideoWrapper(participants[i]);
+      if (videoWrapper) {
+        firstRow.appendChild(videoWrapper);
+      }
+    }
+    
+    const secondRow = document.createElement('div');
+    secondRow.className = 'grid-row';
+    
+    for (let i = 3; i < 6; i++) {
+      const videoWrapper = getOrCreateVideoWrapper(participants[i]);
+      if (videoWrapper) {
+        secondRow.appendChild(videoWrapper);
+      }
+    }
+    
+    secondaryVideosSection.appendChild(firstRow);
+    secondaryVideosSection.appendChild(secondRow);
+    
+  } else if (participantCount === 7) {
+    // Seven participants - 3, 3, 1 centered
+    const firstRow = document.createElement('div');
+    firstRow.className = 'grid-row';
+    
+    for (let i = 0; i < 3; i++) {
+      const videoWrapper = getOrCreateVideoWrapper(participants[i]);
+      if (videoWrapper) {
+        firstRow.appendChild(videoWrapper);
+      }
+    }
+    
+    const secondRow = document.createElement('div');
+    secondRow.className = 'grid-row';
+    
+    for (let i = 3; i < 6; i++) {
+      const videoWrapper = getOrCreateVideoWrapper(participants[i]);
+      if (videoWrapper) {
+        secondRow.appendChild(videoWrapper);
+      }
+    }
+    
+    const thirdRow = document.createElement('div');
+    thirdRow.className = 'grid-row';
+    const videoWrapper = getOrCreateVideoWrapper(participants[6]);
+    if (videoWrapper) {
+      thirdRow.appendChild(videoWrapper);
+    }
+    
+    secondaryVideosSection.appendChild(firstRow);
+    secondaryVideosSection.appendChild(secondRow);
+    secondaryVideosSection.appendChild(thirdRow);
+  }
+}
+
+function renderStandardGrid(participants) {
+  secondaryVideosSection.innerHTML = '';
+  
+  participants.forEach(participant => {
+    const videoWrapper = getOrCreateVideoWrapper(participant);
+    if (videoWrapper) {
+      secondaryVideosSection.appendChild(videoWrapper);
+    }
+  });
+}
+
+function getOrCreateVideoWrapper(participant) {
+  let videoWrapper = document.getElementById(`video-${participant.socketId}`);
+  if (!videoWrapper) {
+    videoWrapper = createVideoWrapper(participant.socketId);
+  }
+  
+  if (videoWrapper) {
+    videoWrapper.classList.remove('main-video');
+    updateVideoWrapperBadges(videoWrapper, participant);
+    
+    // Update local stream for own video
+    if (participant.socketId === socket.id && localStream) {
+      const videoElement = videoWrapper.querySelector('.video-frame');
+      if (videoElement) {
+        videoElement.srcObject = localStream;
+      }
+    }
+  }
+  
+  return videoWrapper;
+}
+
+function updateGridNavigation() {
+  if (!gridNavigation) return;
+  
+  const totalParticipants = participants.size;
+  
+  if (currentView === 'grid' && totalParticipants > participantsPerPage) {
+    gridNavigation.style.display = 'flex';
+    
+    if (gridPrevBtn) {
+      gridPrevBtn.disabled = currentGridPage === 0;
+    }
+    
+    if (gridNextBtn) {
+      gridNextBtn.disabled = currentGridPage >= totalGridPages - 1;
+    }
+    
+    if (gridSetIndicator) {
+      const startIndex = currentGridPage * participantsPerPage + 1;
+      const endIndex = Math.min((currentGridPage + 1) * participantsPerPage, totalParticipants);
+      gridSetIndicator.textContent = `${startIndex}-${endIndex} of ${totalParticipants}`;
+    }
+  } else {
+    gridNavigation.style.display = 'none';
+  }
+}
+
+function setupEventListeners() {
+  // Control buttons
+  if (micBtn) {
+    micBtn.addEventListener('click', toggleMicrophone);
+  }
+  
+  if (cameraBtn) {
+    cameraBtn.addEventListener('click', toggleCamera);
+  }
+  
+  if (screenShareBtn) {
+    screenShareBtn.addEventListener('click', toggleScreenShare);
+  }
+  
+  if (participantsBtn) {
+    participantsBtn.addEventListener('click', toggleParticipantsPanel);
+  }
+  
+  if (reactionsBtn) {
+    reactionsBtn.addEventListener('click', toggleEmojiPicker);
+  }
+  
+  if (handBtn) {
+    handBtn.addEventListener('click', toggleHandRaise);
+  }
+  
+  if (endCallBtn) {
+    endCallBtn.addEventListener('click', endCall);
+  }
+  
+  if (viewToggleBtn) {
+    viewToggleBtn.addEventListener('click', toggleView);
+  }
+  
+  // Grid navigation
+  if (gridPrevBtn) {
+    gridPrevBtn.addEventListener('click', () => {
+      if (currentGridPage > 0) {
+        currentGridPage--;
+        renderVideoGrid();
+      }
+    });
+  }
+  
+  if (gridNextBtn) {
+    gridNextBtn.addEventListener('click', () => {
+      if (currentGridPage < totalGridPages - 1) {
+        currentGridPage++;
+        renderVideoGrid();
+      }
+    });
+  }
+  
+  // Participants panel
+  const closeParticipantsBtn = document.getElementById('closeParticipants');
+  if (closeParticipantsBtn) {
+    closeParticipantsBtn.addEventListener('click', toggleParticipantsPanel);
+  }
+  
+  // Emoji picker
+  const emojiButtons = document.querySelectorAll('.emoji-btn');
+  emojiButtons.forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const emoji = e.target.textContent;
+      sendReaction(emoji);
+      hideEmojiPicker();
+    });
+  });
+  
+  // Close emoji picker when clicking outside
+  document.addEventListener('click', (e) => {
+    if (emojiPicker && !emojiPicker.contains(e.target) && e.target !== reactionsBtn) {
+      hideEmojiPicker();
+    }
+  });
+  
+  // Meeting title click
+  if (meetingTitle) {
+    meetingTitle.addEventListener('click', showMeetingInfo);
+  }
+}
+
+function toggleMicrophone() {
+  if (!localStream) return;
+  
+  const audioTrack = localStream.getAudioTracks()[0];
+  if (audioTrack) {
+    audioTrack.enabled = !audioTrack.enabled;
+    const isMuted = !audioTrack.enabled;
+    
+    micBtn.setAttribute('data-active', isMuted ? 'false' : 'true');
+    micBtn.innerHTML = isMuted ? '🔇' : '🎤';
+    
+    socket.emit('toggle-mic', { isMuted });
+  }
+}
+
+function toggleCamera() {
+  if (!localStream) return;
+  
+  const videoTrack = localStream.getVideoTracks()[0];
+  if (videoTrack) {
+    videoTrack.enabled = !videoTrack.enabled;
+    const isCameraOff = !videoTrack.enabled;
+    
+    cameraBtn.setAttribute('data-active', isCameraOff ? 'false' : 'true');
+    cameraBtn.innerHTML = isCameraOff ? '📹' : '📷';
+    
+    socket.emit('toggle-camera', { isCameraOff });
+  }
+}
+
+async function toggleScreenShare() {
+  try {
+    if (screenShareBtn.getAttribute('data-active') === 'true') {
+      // Stop screen sharing
+      stopScreenShare();
+    } else {
+      // Start screen sharing
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: true
       });
       
-      // Method 1: Add console logging to the existing HostMeeting class
-      // Add this line in the constructor after meetingId is set:
-      console.log('Meeting ID:', this.meetingId);
-
-      // Method 2: Create a global function to access meeting ID
-      // Add this after the HostMeeting class definition:
-      window.getMeetingId = function() {
-        // Extract from URL (same logic as in the constructor)
-        const meetingId = window.location.pathname.split('/').pop();
-        console.log('Current Meeting ID:', meetingId);
-        return meetingId;
-      };
-
-      // Method 3: Store the meeting instance globally for console access
-      // Modify the DOMContentLoaded event listener:
-      document.addEventListener('DOMContentLoaded', () => {
-        window.hostMeeting = new HostMeeting();
-        console.log('Host Meeting initialized. Meeting ID:', window.hostMeeting.meetingId);
-      });
-
-      // Method 4: Add a dedicated console command function
-      window.showMeetingInfo = function() {
-        const meetingId = window.location.pathname.split('/').pop();
-        const joinUrl = `${window.location.origin}/join/${meetingId}`;
-        
-        console.group('📹 Meeting Information');
-        console.log('Meeting ID:', meetingId);
-        console.log('Join URL:', joinUrl);
-        console.log('Current URL:', window.location.href);
-        if (window.hostMeeting) {
-          console.log('Participants:', window.hostMeeting.participants.size);
-          console.log('Is Host:', window.hostMeeting.isHost);
-          console.log('User Name:', window.hostMeeting.userName);
+      // Replace video track in all peer connections
+      const videoTrack = screenStream.getVideoTracks()[0];
+      
+      peerConnections.forEach(async (pc) => {
+        const sender = pc.getSenders().find(s => 
+          s.track && s.track.kind === 'video'
+        );
+        if (sender) {
+          await sender.replaceTrack(videoTrack);
         }
-        console.groupEnd();
-        
-        return {
-          meetingId,
-          joinUrl,
-          currentUrl: window.location.href
-        };
-      };
-
-      // Method 5: Simple one-liner for immediate use
-      // You can run this directly in the browser console:
-      console.log('Meeting ID:', window.location.pathname.split('/').pop());
-
-      // Method 6: Enhanced version with error handling
-      window.getMeetingDetails = function() {
-        try {
-          const pathParts = window.location.pathname.split('/');
-          const meetingId = pathParts[pathParts.length - 1];
-          
-          if (!meetingId || meetingId === '') {
-            console.warn('No meeting ID found in URL');
-            return null;
-          }
-          
-          const details = {
-            meetingId: meetingId,
-            joinUrl: `${window.location.origin}/join/${meetingId}`,
-            hostUrl: window.location.href,
-            timestamp: new Date().toISOString()
-          };
-          
-          console.table(details);
-          return details;
-        } catch (error) {
-          console.error('Error getting meeting details:', error);
-          return null;
-        }
-      };
-      
-      // Make host name globally accessible
-      var myName = null;
-      window.myName = null;
-
-      // Store global reference when meeting initializes  
-      window.addEventListener('load', function() {
-        setTimeout(() => {
-          // Try to find the host name from various sources
-          const participantItems = document.querySelectorAll('.participant-item');
-          for (let item of participantItems) {
-            const roleElement = item.querySelector('.role-badge');
-            if (roleElement && roleElement.textContent.includes('Host')) {
-              const nameElement = item.querySelector('.participant-name');
-              if (nameElement) {
-                myName = nameElement.textContent.trim();
-                window.myName = myName;
-                console.log('myName set to:', myName);
-                return;
-              }
-            }
-          }
-        }, 3000); // Wait 3 seconds for everything to load
       });
       
+      // Update local video
+      const localVideo = document.querySelector(`#video-${socket.id} .video-frame`);
+      if (localVideo) {
+        localVideo.srcObject = screenStream;
+      }
+      
+      screenShareBtn.setAttribute('data-active', 'true');
+      screenShareBtn.innerHTML = '🛑';
+      
+      socket.emit('start-screen-share', {
+        streamId: screenStream.id
+      });
+      
+      // Handle screen share end
+      videoTrack.onended = () => {
+        stopScreenShare();
+      };
+    }
+  } catch (error) {
+    console.error('Error toggling screen share:', error);
+    showToast('Failed to share screen', 'error');
+  }
+}
+
+async function stopScreenShare() {
+  try {
+    // Get camera stream back
+    const cameraStream = await navigator.mediaDevices.getUserMedia({
+      video: true,
+      audio: true
+    });
+    
+    // Replace video track in all peer connections
+    const videoTrack = cameraStream.getVideoTracks()[0];
+    
+    peerConnections.forEach(async (pc) => {
+      const sender = pc.getSenders().find(s => 
+        s.track && s.track.kind === 'video'
+      );
+      if (sender) {
+        await sender.replaceTrack(videoTrack);
+      }
+    });
+    
+    // Update local video
+    const localVideo = document.querySelector(`#video-${socket.id} .video-frame`);
+    if (localVideo) {
+      localVideo.srcObject = cameraStream;
+    }
+    
+    // Update local stream reference
+    localStream = cameraStream;
+    
+    screenShareBtn.setAttribute('data-active', 'false');
+    screenShareBtn.innerHTML = '🖥️';
+    
+    socket.emit('stop-screen-share');
+    
+  } catch (error) {
+    console.error('Error stopping screen share:', error);
+  }
+}
+
+function toggleParticipantsPanel() {
+  if (participantsPanel) {
+    participantsPanel.classList.toggle('open');
+    videoContainer.classList.toggle('participants-open');
+  }
+}
+
+function toggleView() {
+  currentView = currentView === 'sidebar' ? 'grid' : 'sidebar';
+  
+  videoContainer.className = `video-container ${currentView}-view`;
+  
+  if (viewToggleBtn) {
+    const icon = currentView === 'sidebar' ? '⊞' : '⊟';
+    const text = currentView === 'sidebar' ? 'Grid View' : 'Sidebar View';
+    viewToggleBtn.innerHTML = `${icon} <span>${text}</span>`;
+  }
+  
+  // Reset grid page when switching views
+  currentGridPage = 0;
+  renderVideoGrid();
+}
+
+function toggleEmojiPicker() {
+  if (emojiPicker) {
+    emojiPicker.classList.toggle('show');
+    
+    if (emojiPicker.classList.contains('show')) {
+      // Position the emoji picker above the reactions button
+      const rect = reactionsBtn.getBoundingClientRect();
+      emojiPicker.style.left = `${rect.left + rect.width / 2}px`;
+      emojiPicker.style.bottom = `${window.innerHeight - rect.top + 10}px`;
+    }
+  }
+}
+
+function hideEmojiPicker() {
+  if (emojiPicker) {
+    emojiPicker.classList.remove('show');
+  }
+}
+
+function toggleHandRaise() {
+  isHandRaised = !isHandRaised;
+  
+  if (isHandRaised) {
+    socket.emit('raise-hand');
+    handBtn.setAttribute('data-active', 'true');
+    handBtn.innerHTML = '✋';
+  } else {
+    socket.emit('lower-hand');
+    handBtn.setAttribute('data-active', 'false');
+    handBtn.innerHTML = '🖐️';
+  }
+}
+
+function sendReaction(emoji) {
+  socket.emit('send-reaction', {
+    emoji: emoji,
+    timestamp: Date.now()
+  });
+}
+
+function showReaction(emoji, participantName, socketId) {
+  // Create floating reaction
+  const reaction = document.createElement('div');
+  reaction.className = 'floating-reaction';
+  
+  const emojiDiv = document.createElement('div');
+  emojiDiv.className = 'floating-emoji';
+  emojiDiv.textContent = emoji;
+  
+  const nameDiv = document.createElement('div');
+  nameDiv.className = 'floating-name';
+  nameDiv.textContent = participantName;
+  
+  reaction.appendChild(emojiDiv);
+  reaction.appendChild(nameDiv);
+  
+  // Position randomly on screen
+  reaction.style.left = Math.random() * (window.innerWidth - 100) + 'px';
+  reaction.style.top = Math.random() * (window.innerHeight - 100) + 'px';
+  
+  reactionOverlay.appendChild(reaction);
+  
+  // Animate
+  setTimeout(() => {
+    reaction.classList.add('animate');
+  }, 100);
+  
+  // Remove after animation
+  setTimeout(() => {
+    reaction.remove();
+  }, 3000);
+}
+
+function updateParticipantsList() {
+  if (!participantsList) return;
+  
+  participantsList.innerHTML = '';
+  
+  const participantArray = Array.from(participants.values());
+  
+  participantArray.forEach(participant => {
+    const participantItem = document.createElement('div');
+    participantItem.className = 'participant-item';
+    
+    const avatar = document.createElement('div');
+    avatar.className = 'participant-avatar';
+    avatar.textContent = participant.name.charAt(0).toUpperCase();
+    
+    const info = document.createElement('div');
+    info.className = 'participant-info';
+    
+    const name = document.createElement('div');
+    name.className = 'participant-name';
+    name.textContent = participant.name;
+    
+    const role = document.createElement('div');
+    role.className = 'participant-role';
+    
+    const roleBadge = document.createElement('span');
+    roleBadge.className = `role-badge ${participant.isHost ? 'host' : participant.isCoHost ? 'cohost' : 'participant'}`;
+    roleBadge.textContent = participant.isHost ? 'Host' : participant.isCoHost ? 'Co-Host' : 'Participant';
+    
+    role.appendChild(roleBadge);
+    
+    info.appendChild(name);
+    info.appendChild(role);
+    
+    const status = document.createElement('div');
+    status.className = 'participant-status';
+    
+    if (participant.isMuted) {
+      const mutedIcon = document.createElement('div');
+      mutedIcon.className = 'status-icon muted';
+      mutedIcon.innerHTML = '🔇';
+      status.appendChild(mutedIcon);
+    }
+    
+    if (participant.isCameraOff) {
+      const cameraIcon = document.createElement('div');
+      cameraIcon.className = 'status-icon camera-off';
+      cameraIcon.innerHTML = '📹';
+      status.appendChild(cameraIcon);
+    }
+    
+    if (participant.handRaised) {
+      const handIcon = document.createElement('div');
+      handIcon.className = 'status-icon hand-raised-icon';
+      handIcon.innerHTML = '✋';
+      status.appendChild(handIcon);
+    }
+    
+    participantItem.appendChild(avatar);
+    participantItem.appendChild(info);
+    participantItem.appendChild(status);
+    
+    participantsList.appendChild(participantItem);
+  });
+}
+
+function updateParticipantsCount() {
+  if (participantsCount) {
+    participantsCount.textContent = participants.size;
+  }
+}
+
+function endCall() {
+  if (confirm('Are you sure you want to leave the meeting?')) {
+    // Clean up local stream
+    if (localStream) {
+      localStream.getTracks().forEach(track => track.stop());
+    }
+    
+    // Close all peer connections
+    peerConnections.forEach(pc => pc.close());
+    
+    // Disconnect from socket
+    if (socket) {
+      socket.disconnect();
+    }
+    
+    // Redirect to home
+    window.location.href = '/';
+  }
+}
+
+function showMeetingInfo() {
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  
+  modal.innerHTML = `
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Meeting Information</h3>
+        <button class="close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="info-item">
+          <label>Meeting ID:</label>
+          <div class="meeting-id-display">
+            <span>${meetingId}</span>
+            <button class="copy-btn" onclick="copyMeetingId('${meetingId}')">Copy</button>
+          </div>
+        </div>
+        <div class="info-item">
+          <label>Participants:</label>
+          <span>${participants.size}</span>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  document.body.appendChild(modal);
+  
+  // Close modal handlers
+  const closeBtn = modal.querySelector('.close-btn');
+  closeBtn.addEventListener('click', () => {
+    modal.remove();
+  });
+  
+  modal.addEventListener('click', (e) => {
+    if (e.target === modal) {
+      modal.remove();
+    }
+  });
+}
+
+function copyMeetingId(meetingId) {
+  navigator.clipboard.writeText(meetingId).then(() => {
+    showToast('Meeting ID copied to clipboard', 'info');
+  });
+}
+
+function showModal(title, message, onConfirm) {
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  
+  modal.innerHTML = `
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>${title}</h3>
+      </div>
+      <div class="modal-body">
+        <p>${message}</p>
+        <button class="btn btn-primary" onclick="this.closest('.modal-overlay').remove(); ${onConfirm ? 'onConfirm()' : ''}">OK</button>
+      </div>
+    </div>
+  `;
+  
+  document.body.appendChild(modal);
+  
+  if (onConfirm) {
+    window.onConfirm = onConfirm;
+  }
+}
+
+function showToast(message, type = 'info') {
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+  toast.textContent = message;
+  
+  document.body.appendChild(toast);
+  
+  setTimeout(() => {
+    toast.classList.add('show');
+  }, 100);
+  
+  setTimeout(() => {
+    toast.classList.remove('show');
+    setTimeout(() => {
+      toast.remove();
+    }, 300);
+  }, 3000);
+}
+
+function startMeetingTimer() {
+  const startTime = Date.now();
+  
+  setInterval(() => {
+    const elapsed = Date.now() - startTime;
+    const minutes = Math.floor(elapsed / 60000);
+    const seconds = Math.floor((elapsed % 60000) / 1000);
+    
+    if (meetingTime) {
+      meetingTime.textContent = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    }
+  }, 1000);
+}
